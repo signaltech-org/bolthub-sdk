@@ -170,16 +170,19 @@ export async function createWallet(): Promise<WalletAdapter> {
   const nwcUri = process.env.NWC_URI;
   if (nwcUri) {
     try {
-      const { nwc } = await import("@getalby/sdk");
-      const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUri });
+      const { NWCClient } = await import("@getalby/sdk");
+      const client = new NWCClient({ nostrWalletConnectUrl: nwcUri });
       return new NwcWallet({
         payInvoice: async (invoice: string) => {
           const result = await client.payInvoice({ invoice });
           return { preimage: result.preimage };
         },
       });
-    } catch {
-      console.error("@getalby/sdk not available. Install it for NWC: npm install @getalby/sdk");
+    } catch (err) {
+      console.error(
+        "Failed to load @getalby/sdk for NWC support:",
+        err instanceof Error ? err.message : err,
+      );
       process.exit(1);
     }
   }

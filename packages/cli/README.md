@@ -57,9 +57,7 @@ environment variable pairs:
 | `PHOENIXD_URL` + `PHOENIXD_PASSWORD` | Phoenixd (recommended) | <200ms |
 | `LND_REST_HOST` + `LND_MACAROON` | LND | <200ms |
 | `LNBITS_URL` + `LNBITS_ADMIN_KEY` | LNbits | <300ms |
-| `NWC_URI` | NWC (requires `@getalby/sdk`) | 1-3s |
-
-For NWC support, install the Alby SDK: `npm install @getalby/sdk`.
+| `NWC_URI` | NWC (bundled, no extra install) | 1-3s |
 
 ## License
 

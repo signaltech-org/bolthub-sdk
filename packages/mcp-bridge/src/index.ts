@@ -75,17 +75,18 @@ async function createWallet(): Promise<WalletAdapter> {
   if (nwcUri) {
     console.error("[mcp-bridge] Using NWC wallet (slower, 1-3s payments via relay)");
     try {
-      const { nwc } = await import("@getalby/sdk");
-      const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUri });
+      const { NWCClient } = await import("@getalby/sdk");
+      const client = new NWCClient({ nostrWalletConnectUrl: nwcUri });
       return new NwcWallet({
         payInvoice: async (invoice: string) => {
           const result = await client.payInvoice({ invoice });
           return { preimage: result.preimage };
         },
       });
-    } catch {
+    } catch (err) {
       console.error(
-        "[mcp-bridge] @getalby/sdk not available. Install it for NWC support: npm install @getalby/sdk",
+        "[mcp-bridge] Failed to load @getalby/sdk for NWC support:",
+        err instanceof Error ? err.message : err,
       );
       process.exit(1);
     }
