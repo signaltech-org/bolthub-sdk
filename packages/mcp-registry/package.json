@@ -1,7 +1,8 @@
 {
   "name": "@bolthub/mcp-registry",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "MCP server that gives AI agents access to every API on the bolthub marketplace — search, discover, and call any L402 endpoint with one config",
+  "mcpName": "ai.bolthub/registry",
   "type": "module",
   "bin": {
     "mcp-registry": "./dist/index.js"
@@ -17,7 +18,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@bolthub/agent": "workspace:*"
+    "@bolthub/agent": "workspace:*",
+    "@getalby/sdk": "^8.0.3"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

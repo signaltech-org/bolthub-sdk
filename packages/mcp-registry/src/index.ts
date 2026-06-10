@@ -69,17 +69,18 @@ async function createWallet(): Promise<WalletAdapter> {
   if (nwcUri) {
     console.error("[mcp-registry] Using NWC wallet");
     try {
-      const { nwc } = await import("@getalby/sdk");
-      const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUri });
+      const { NWCClient } = await import("@getalby/sdk");
+      const client = new NWCClient({ nostrWalletConnectUrl: nwcUri });
       return new NwcWallet({
         payInvoice: async (invoice: string) => {
           const result = await client.payInvoice({ invoice });
           return { preimage: result.preimage };
         },
       });
-    } catch {
+    } catch (err) {
       console.error(
-        "[mcp-registry] @getalby/sdk not available. Install it for NWC support: npm install @getalby/sdk",
+        "[mcp-registry] Failed to load @getalby/sdk for NWC support:",
+        err instanceof Error ? err.message : err,
       );
       process.exit(1);
     }

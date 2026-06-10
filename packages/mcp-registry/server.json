@@ -1,0 +1,80 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "ai.bolthub/registry",
+  "title": "bolthub Marketplace",
+  "description": "Discover and call every paid API on the bolthub marketplace with automatic L402 Lightning payments.",
+  "repository": {
+    "url": "https://github.com/signaltech-org/bolthub-sdk",
+    "source": "github",
+    "subfolder": "packages/mcp-registry"
+  },
+  "websiteUrl": "https://docs.bolthub.ai/docs/sdks/mcp-registry",
+  "version": "0.1.4",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@bolthub/mcp-registry",
+      "version": "0.1.4",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "LND_REST_HOST",
+          "description": "LND REST API URL (recommended wallet; pair with LND_MACAROON). One wallet config is required.",
+          "isRequired": false,
+          "isSecret": false,
+          "placeholder": "https://your-lnd-node:8080"
+        },
+        {
+          "name": "LND_MACAROON",
+          "description": "Hex-encoded macaroon for LND (use a pay-scoped macaroon in production). Required with LND_REST_HOST.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "NWC_URI",
+          "description": "Nostr Wallet Connect string — easiest setup, works with CoinOS, Alby Hub, Zeus, and more. Alternative to LND.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "LNBITS_URL",
+          "description": "LNbits instance URL (pair with LNBITS_ADMIN_KEY). Alternative wallet.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "LNBITS_ADMIN_KEY",
+          "description": "Admin API key for LNbits. Required with LNBITS_URL.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "PHOENIXD_URL",
+          "description": "Phoenixd HTTP API URL (pair with PHOENIXD_PASSWORD). Alternative wallet.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "PHOENIXD_PASSWORD",
+          "description": "HTTP password for Phoenixd. Required with PHOENIXD_URL.",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "BUDGET_SATS",
+          "description": "Maximum sats the server may spend per session (process lifetime). Unset = unlimited.",
+          "isRequired": false,
+          "isSecret": false,
+          "placeholder": "1000"
+        },
+        {
+          "name": "BOLTHUB_AUTH_TOKEN",
+          "description": "Optional bolthub API token, used only by the deploy_node / node_status Node Launcher tools.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
