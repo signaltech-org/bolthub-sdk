@@ -45,13 +45,13 @@ jobs:
             pkg: "@bolthub/cli"
             dir: packages/cli
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: oven-sh/setup-bun@v2.1.3
+      - uses: oven-sh/setup-bun@v2.2.0
         with:
           bun-version: 1.3.5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -141,9 +141,9 @@ jobs:
             pkg: bolthub-verify
             dir: packages/verify-python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
