@@ -1,0 +1,36 @@
+{
+  "name": "@bolthub/verify",
+  "version": "0.1.2",
+  "description": "Verify bolthub gateway signatures on your origin server — Express, Fastify, or generic Node.js middleware",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm && cp dist/index.js dist/index.mjs && bun build src/index.ts --outdir dist --target node --format cjs && bun x tsc --emitDeclarationOnly --outDir dist --declaration --project tsconfig.build.json",
+    "prepublishOnly": "bun run build",
+    "test": "bun test"
+  },
+  "keywords": ["bolthub", "l402", "gateway", "hmac", "origin-protection", "middleware", "express", "fastify"],
+  "devDependencies": {
+    "@types/node": "^22"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/signaltech-org/bolthub-sdk.git",
+    "directory": "packages/verify"
+  },
+  "homepage": "https://docs.bolthub.ai",
+  "bugs": {
+    "url": "https://github.com/signaltech-org/bolthub-sdk/issues"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "@bolthub/mcp-registry",
+  "version": "0.1.3",
+  "description": "MCP server that gives AI agents access to every API on the bolthub marketplace — search, discover, and call any L402 endpoint with one config",
+  "type": "module",
+  "bin": {
+    "mcp-registry": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --sourcemap=linked",
+    "prepublishOnly": "bun run build",
+    "dev": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bolthub/agent": "workspace:*"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3"
+  },
+  "keywords": [
+    "mcp",
+    "l402",
+    "lightning",
+    "bitcoin",
+    "ai-agent",
+    "api-marketplace",
+    "model-context-protocol",
+    "registry"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/signaltech-org/bolthub-sdk.git",
+    "directory": "packages/mcp-registry"
+  },
+  "homepage": "https://docs.bolthub.ai/docs/sdks/mcp-registry",
+  "bugs": {
+    "url": "https://github.com/signaltech-org/bolthub-sdk/issues"
+  }
+}

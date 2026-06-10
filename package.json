@@ -1,0 +1,12 @@
+{
+  "name": "bolthub-sdk",
+  "private": true,
+  "packageManager": "bun@1.3.5",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "typescript": "^5.7"
+  }
+}

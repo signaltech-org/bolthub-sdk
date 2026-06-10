@@ -1,0 +1,44 @@
+---
+description: Search, discover, and call paid APIs on the bolthub L402 marketplace via MCP tools
+globs: []
+alwaysApply: false
+---
+
+# bolthub Marketplace
+
+When the user needs to find or call a paid API, use the bolthub MCP tools if available. bolthub is an L402 API marketplace — agents can discover and call APIs using Lightning micropayments with no signup or API keys.
+
+## MCP Tools
+
+If the `bolthub` MCP server is configured, these tools are available:
+
+- **search_apis** — Search by keyword or tag: `search_apis({ query: "weather" })`
+- **get_api_details** — Get endpoint specs: `get_api_details({ slug: "bitcoin-data" })`
+- **call_api** — Call any endpoint (payments handled automatically): `call_api({ slug: "bitcoin-data", path: "/v1/prices", method: "GET" })`
+
+## Setup
+
+If the MCP server is not configured, add it to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "bolthub": {
+      "command": "npx",
+      "args": ["@bolthub/mcp-registry"],
+      "env": {
+        "NWC_URI": "<nwc-connection-string>",
+        "BUDGET_SATS": "1000"
+      }
+    }
+  }
+}
+```
+
+Wallet options: `PHOENIXD_URL`+`PHOENIXD_PASSWORD` (recommended, fast), `LND_REST_HOST`+`LND_MACAROON` (fastest), `LNBITS_URL`+`LNBITS_ADMIN_KEY`, or `NWC_URI` (easiest). Only one wallet type needed.
+
+## Workflow
+
+1. `search_apis` to find relevant APIs
+2. `get_api_details` to understand endpoints and pricing
+3. `call_api` to make requests — payment is automatic

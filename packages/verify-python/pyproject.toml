@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bolthub-verify"
+version = "0.1.1"
+description = "Verify bolthub gateway signatures on your origin — Flask, Django, FastAPI middleware"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["bolthub", "l402", "gateway", "hmac", "origin-protection", "middleware"]
+
+[project.optional-dependencies]
+flask = ["flask"]
+django = ["django"]
+fastapi = ["fastapi"]
+dev = ["pytest"]
+
+[project.urls]
+Documentation = "https://docs.bolthub.ai"
+Repository = "https://github.com/signaltech-org/bolthub-sdk"
+Issues = "https://github.com/signaltech-org/bolthub-sdk/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

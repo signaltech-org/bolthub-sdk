@@ -1,0 +1,340 @@
+#!/usr/bin/env node
+
+import {
+  L402Client,
+  LndWallet,
+  LnbitsWallet,
+  PhoenixdWallet,
+  NwcWallet,
+  FileSessionStore,
+} from "@bolthub/agent";
+import type { WalletAdapter } from "@bolthub/agent";
+
+const API_URL = process.env.BOLTHUB_API_URL || "https://api.bolthub.ai";
+const GATEWAY_DOMAIN = "gw.bolthub.ai";
+
+interface DirectoryEndpoint {
+  path: string;
+  method: string;
+  title: string | null;
+  description: string | null;
+  pricingModel: string | null;
+  priceSats: number | null;
+  tokenBudget: number | null;
+  durationMinutes: number | null;
+  unitCostSats: number | null;
+  freeTryEnabled: boolean;
+}
+
+interface DirectoryEntry {
+  slug: string;
+  name: string;
+  description: string | null;
+  tags: string[];
+  gatewayDomain: string;
+  endpointCount: number;
+  endpoints: DirectoryEndpoint[];
+  quality?: {
+    isHealthy: boolean;
+    uptimePercentage: number | null;
+    avgResponseTimeMs: number | null;
+  };
+}
+
+/** Format an endpoint's pricing model into a human-readable string. */
+export function formatPricing(ep: DirectoryEndpoint): string {
+  if (!ep.priceSats) return "free";
+  switch (ep.pricingModel) {
+    case "per_kb":
+      return `${ep.unitCostSats ?? ep.priceSats} sats/KB (${ep.priceSats} deposit)`;
+    case "token_bucket":
+      return `${ep.priceSats} sats for ${ep.tokenBudget ?? "N"} requests`;
+    case "time_pass":
+      return `${ep.priceSats} sats for ${ep.durationMinutes ?? "N"} min`;
+    case "metered":
+      return `${ep.priceSats} deposit, ${ep.unitCostSats ?? "N"} sats/req`;
+    default:
+      return `${ep.priceSats} sats/request`;
+  }
+}
+
+/** Search the BoltHub directory and print results to stdout. */
+export async function search(query?: string, tag?: string): Promise<void> {
+  const params = new URLSearchParams();
+  if (query) params.set("search", query);
+  if (tag) params.set("tag", tag);
+  params.set("limit", "20");
+
+  const resp = await fetch(`${API_URL}/directory?${params}`);
+  if (!resp.ok) {
+    console.error(`Error: API returned ${resp.status}`);
+    process.exit(1);
+  }
+
+  const data = await resp.json();
+  const entries: DirectoryEntry[] = data.entries ?? [];
+
+  if (entries.length === 0) {
+    console.log(query || tag ? `No APIs found matching "${query ?? tag}".` : "No APIs listed yet.");
+    return;
+  }
+
+  console.log(`Found ${entries.length} API${entries.length === 1 ? "" : "s"}:\n`);
+
+  for (const entry of entries) {
+    const health = entry.quality?.uptimePercentage != null
+      ? ` [${entry.quality.uptimePercentage}% uptime]`
+      : "";
+    console.log(`  ${entry.name} (${entry.slug})${health}`);
+    if (entry.description) console.log(`    ${entry.description}`);
+    if (entry.tags.length > 0) console.log(`    Tags: ${entry.tags.join(", ")}`);
+    console.log(`    ${entry.endpointCount} endpoint${entry.endpointCount !== 1 ? "s" : ""}`);
+
+    const prices = entry.endpoints
+      .map((ep) => ep.priceSats)
+      .filter((p): p is number => p != null && p > 0);
+    if (prices.length > 0) {
+      const min = Math.min(...prices);
+      const max = Math.max(...prices);
+      console.log(`    Price: ${min === max ? `${min} sats` : `${min}–${max} sats`}`);
+    }
+    console.log();
+  }
+
+  console.log(`Use: bolthub info <slug>    — full details`);
+  console.log(`Use: bolthub call <slug> <path>  — call an endpoint`);
+}
+
+/** Fetch and display full details for a single API. */
+export async function info(slug: string): Promise<void> {
+  const resp = await fetch(`${API_URL}/directory/${encodeURIComponent(slug)}`);
+  if (!resp.ok) {
+    if (resp.status === 404) {
+      console.error(`API "${slug}" not found in the bolthub directory.`);
+    } else {
+      console.error(`Error: API returned ${resp.status}`);
+    }
+    process.exit(1);
+  }
+
+  const entry: DirectoryEntry = await resp.json();
+
+  console.log(`${entry.name}\n`);
+  if (entry.description) console.log(`${entry.description}\n`);
+  console.log(`Slug:    ${entry.slug}`);
+  console.log(`Gateway: ${entry.gatewayDomain}`);
+  if (entry.tags.length > 0) console.log(`Tags:    ${entry.tags.join(", ")}`);
+
+  if (entry.quality) {
+    const parts: string[] = [];
+    if (entry.quality.uptimePercentage != null) parts.push(`${entry.quality.uptimePercentage}% uptime`);
+    if (entry.quality.avgResponseTimeMs != null) parts.push(`${entry.quality.avgResponseTimeMs}ms avg`);
+    if (parts.length > 0) console.log(`Quality: ${parts.join(", ")}`);
+  }
+
+  console.log(`\nEndpoints:\n`);
+
+  for (const ep of entry.endpoints) {
+    console.log(`  ${ep.method} ${ep.path}`);
+    if (ep.title) console.log(`    ${ep.title}`);
+    if (ep.description) console.log(`    ${ep.description}`);
+    console.log(`    Pricing: ${formatPricing(ep)}`);
+    if (ep.freeTryEnabled) console.log(`    Free try: available`);
+    console.log();
+  }
+
+  console.log(`Use: bolthub call ${slug} <path> [--max-cost <sats>]`);
+  console.log(`Use: lnget --max-cost 100 ${entry.gatewayDomain}/<path>`);
+}
+
+/** Select a wallet adapter based on environment variables. */
+export async function createWallet(): Promise<WalletAdapter> {
+  if (process.env.LND_REST_HOST && process.env.LND_MACAROON) {
+    return new LndWallet({
+      host: process.env.LND_REST_HOST,
+      macaroon: process.env.LND_MACAROON,
+    });
+  }
+  if (process.env.LNBITS_URL && process.env.LNBITS_ADMIN_KEY) {
+    return new LnbitsWallet({
+      url: process.env.LNBITS_URL,
+      adminKey: process.env.LNBITS_ADMIN_KEY,
+    });
+  }
+  if (process.env.PHOENIXD_URL && process.env.PHOENIXD_PASSWORD) {
+    return new PhoenixdWallet({
+      baseUrl: process.env.PHOENIXD_URL,
+      password: process.env.PHOENIXD_PASSWORD,
+    });
+  }
+  const nwcUri = process.env.NWC_URI;
+  if (nwcUri) {
+    try {
+      const { nwc } = await import("@getalby/sdk");
+      const client = new nwc.NWCClient({ nostrWalletConnectUrl: nwcUri });
+      return new NwcWallet({
+        payInvoice: async (invoice: string) => {
+          const result = await client.payInvoice({ invoice });
+          return { preimage: result.preimage };
+        },
+      });
+    } catch {
+      console.error("@getalby/sdk not available. Install it for NWC: npm install @getalby/sdk");
+      process.exit(1);
+    }
+  }
+  console.error("No wallet configured. Set one of:");
+  console.error("  PHOENIXD_URL + PHOENIXD_PASSWORD");
+  console.error("  LND_REST_HOST + LND_MACAROON");
+  console.error("  LNBITS_URL + LNBITS_ADMIN_KEY");
+  console.error("  NWC_URI");
+  process.exit(1);
+}
+
+/** Call a gateway endpoint via the L402 client and print the response. */
+async function call(
+  slug: string,
+  path: string,
+  options: {
+    method?: string;
+    maxCost?: number;
+    body?: string;
+    budget?: number;
+  },
+): Promise<void> {
+  const wallet = await createWallet();
+  const sessionStore = new FileSessionStore();
+  const l402Client = new L402Client({
+    wallet,
+    timeoutMs: 45_000,
+    budgetSats: options.budget,
+    maxPerRequestSats: options.maxCost,
+    sessionStore,
+  });
+
+  const method = (options.method ?? "GET").toUpperCase();
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  const url = `https://${slug}.${GATEWAY_DOMAIN}${normalizedPath}`;
+
+  const fetchOptions: RequestInit = { method };
+  if (options.body && method !== "GET" && method !== "HEAD") {
+    fetchOptions.headers = { "Content-Type": "application/json" };
+    fetchOptions.body = options.body;
+  }
+
+  try {
+    const resp = await l402Client.request(url, fetchOptions);
+    const text = await resp.text();
+
+    if (!resp.ok) {
+      console.error(`HTTP ${resp.status}`);
+      console.log(text);
+      process.exit(1);
+    }
+
+    try {
+      console.log(JSON.stringify(JSON.parse(text), null, 2));
+    } catch {
+      console.log(text);
+    }
+
+    if (l402Client.totalSpent > 0) {
+      console.error(`\nCost: ${l402Client.totalSpent} sats`);
+      if (l402Client.remainingBudget !== Infinity) {
+        console.error(`Remaining budget: ${l402Client.remainingBudget} sats`);
+      }
+    }
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
+function printUsage(): void {
+  console.log(`bolthub — CLI for the bolthub L402 API marketplace
+
+Usage:
+  bolthub search [query]              Search APIs by keyword
+  bolthub search --tag <tag>          Search APIs by tag
+  bolthub info <slug>                 Get full details for an API
+  bolthub call <slug> <path>          Call an API endpoint
+
+Options for call:
+  --method <METHOD>       HTTP method (default: GET)
+  --max-cost <sats>       Refuse invoices above this amount
+  --budget <sats>         Total session spending limit
+  --body <json>           JSON request body (for POST/PUT/PATCH)
+
+Environment:
+  PHOENIXD_URL + PHOENIXD_PASSWORD     Recommended wallet
+  LND_REST_HOST + LND_MACAROON        Fastest wallet
+  LNBITS_URL + LNBITS_ADMIN_KEY       LNbits wallet
+  NWC_URI                              Easiest wallet (slower)
+
+Examples:
+  bolthub search weather
+  bolthub info bitcoin-data
+  bolthub call bitcoin-data /v1/prices --max-cost 10
+  bolthub call ai-text /v1/summarize --method POST --body '{"text":"hello"}'
+`);
+}
+
+async function main(): Promise<void> {
+  const args = process.argv.slice(2);
+  const command = args[0];
+
+  if (!command || command === "--help" || command === "-h") {
+    printUsage();
+    return;
+  }
+
+  if (command === "search") {
+    let query: string | undefined;
+    let tag: string | undefined;
+    for (let i = 1; i < args.length; i++) {
+      if (args[i] === "--tag" && args[i + 1]) {
+        tag = args[++i];
+      } else if (!query) {
+        query = args[i];
+      }
+    }
+    return search(query, tag);
+  }
+
+  if (command === "info") {
+    const slug = args[1];
+    if (!slug) {
+      console.error("Usage: bolthub info <slug>");
+      process.exit(1);
+    }
+    return info(slug);
+  }
+
+  if (command === "call") {
+    const slug = args[1];
+    const path = args[2];
+    if (!slug || !path) {
+      console.error("Usage: bolthub call <slug> <path> [options]");
+      process.exit(1);
+    }
+
+    const options: { method?: string; maxCost?: number; body?: string; budget?: number } = {};
+    for (let i = 3; i < args.length; i++) {
+      if (args[i] === "--method" && args[i + 1]) options.method = args[++i];
+      else if (args[i] === "--max-cost" && args[i + 1]) options.maxCost = parseInt(args[++i], 10);
+      else if (args[i] === "--budget" && args[i + 1]) options.budget = parseInt(args[++i], 10);
+      else if (args[i] === "--body" && args[i + 1]) options.body = args[++i];
+    }
+
+    return call(slug, path, options);
+  }
+
+  console.error(`Unknown command: ${command}`);
+  printUsage();
+  process.exit(1);
+}
+
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});

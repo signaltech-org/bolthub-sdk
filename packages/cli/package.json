@@ -1,0 +1,47 @@
+{
+  "name": "@bolthub/cli",
+  "version": "0.1.3",
+  "description": "CLI for the bolthub L402 API marketplace — search, discover, and call paid APIs from the terminal",
+  "type": "module",
+  "bin": {
+    "bolthub": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --sourcemap=linked",
+    "prepublishOnly": "bun run build",
+    "dev": "bun run src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bolthub/agent": "workspace:*"
+  },
+  "peerDependencies": {
+    "@getalby/sdk": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "@getalby/sdk": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "l402",
+    "lightning",
+    "bitcoin",
+    "cli",
+    "api-marketplace"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/signaltech-org/bolthub-sdk.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://docs.bolthub.ai",
+  "bugs": {
+    "url": "https://github.com/signaltech-org/bolthub-sdk/issues"
+  }
+}
