@@ -1,6 +1,6 @@
 {
   "name": "@bolthub/mcp-registry",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MCP server that gives AI agents access to every API on the bolthub marketplace — search, discover, and call any L402 endpoint with one config",
   "mcpName": "ai.bolthub/registry",
   "type": "module",

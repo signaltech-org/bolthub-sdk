@@ -46,6 +46,7 @@ export class L402Client {
   private maxPerRequestSats: number;
   private budgetSats: number;
   private timeoutMs: number;
+  private payRetries: number;
   private spentSats = 0;
   private onStage?: (stage: L402Stage) => void;
   private store: SessionStore;
@@ -55,6 +56,7 @@ export class L402Client {
     this.maxPerRequestSats = options.maxPerRequestSats ?? Infinity;
     this.budgetSats = options.budgetSats ?? Infinity;
     this.timeoutMs = options.timeoutMs ?? 45_000;
+    this.payRetries = options.payRetries ?? 2;
     this.onStage = options.onStage;
     this.store = options.sessionStore ?? new InMemorySessionStore();
   }
@@ -175,7 +177,7 @@ export class L402Client {
 
     let preimage: string;
     try {
-      const result = await this.wallet.payInvoice(challenge.invoice);
+      const result = await this.payInvoiceWithRetry(challenge.invoice);
       preimage = result.preimage;
     } catch (err) {
       throw new L402PaymentError(
@@ -209,6 +211,27 @@ export class L402Client {
       }
       throw err;
     }
+  }
+
+  /**
+   * Pay an invoice, retrying transient wallet failures with exponential
+   * backoff (500ms, 1s, 2s, …). Retries re-attempt the same BOLT11
+   * invoice, which the network settles at most once — a retry after an
+   * ambiguous failure cannot double-pay.
+   */
+  private async payInvoiceWithRetry(invoice: string): Promise<{ preimage: string }> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= this.payRetries; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
+      }
+      try {
+        return await this.wallet.payInvoice(invoice);
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr;
   }
 
   private getSessionKey(url: string): string {

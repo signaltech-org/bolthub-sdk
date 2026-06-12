@@ -221,3 +221,71 @@ describe("L402Client", () => {
     expect(client.remainingBudget).toBe(940);
   });
 });
+
+describe("payment retry", () => {
+  test("retries transient wallet failures and succeeds", async () => {
+    let calls = 0;
+    const wallet: WalletAdapter = {
+      payInvoice: mock(async () => {
+        calls++;
+        if (calls < 2) throw new Error("Failed to connect to wss://relay.example.com");
+        return { preimage: "p123" };
+      }),
+    };
+    const client = new L402Client({ wallet });
+
+    mockFetch([
+      new Response(JSON.stringify({ error: "Payment Required" }), {
+        status: 402,
+        headers: { "WWW-Authenticate": 'L402 macaroon="mac", invoice="lnbc10..."' },
+      }),
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    ]);
+
+    const resp = await client.get("https://example.com/api");
+    expect(resp.status).toBe(200);
+    expect(calls).toBe(2);
+  });
+
+  test("gives up after payRetries and throws L402PaymentError", async () => {
+    let calls = 0;
+    const wallet: WalletAdapter = {
+      payInvoice: mock(async () => {
+        calls++;
+        throw new Error("no info event (kind 13194) returned from relay");
+      }),
+    };
+    const client = new L402Client({ wallet, payRetries: 1 });
+
+    mockFetch([
+      new Response(JSON.stringify({ error: "Payment Required" }), {
+        status: 402,
+        headers: { "WWW-Authenticate": 'L402 macaroon="mac", invoice="lnbc10..."' },
+      }),
+    ]);
+
+    await expect(client.get("https://example.com/api")).rejects.toThrow("no info event");
+    expect(calls).toBe(2);
+  });
+
+  test("payRetries: 0 disables retries", async () => {
+    let calls = 0;
+    const wallet: WalletAdapter = {
+      payInvoice: mock(async () => {
+        calls++;
+        throw new Error("connection failed");
+      }),
+    };
+    const client = new L402Client({ wallet, payRetries: 0 });
+
+    mockFetch([
+      new Response(JSON.stringify({ error: "Payment Required" }), {
+        status: 402,
+        headers: { "WWW-Authenticate": 'L402 macaroon="mac", invoice="lnbc10..."' },
+      }),
+    ]);
+
+    await expect(client.get("https://example.com/api")).rejects.toThrow("connection failed");
+    expect(calls).toBe(1);
+  });
+});

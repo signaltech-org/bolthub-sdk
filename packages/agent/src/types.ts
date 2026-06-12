@@ -23,6 +23,15 @@ export interface L402ClientOptions {
   /** Timeout in milliseconds for each HTTP round-trip. Defaults to 45 000. */
   timeoutMs?: number;
 
+  /**
+   * Automatic retries when the wallet fails to pay, with exponential
+   * backoff. Targets transient transport failures — NWC relays in
+   * particular refuse connections intermittently. Retries re-attempt the
+   * SAME invoice, which the Lightning network settles at most once, so a
+   * retry can never double-pay. Defaults to 2; set 0 to disable.
+   */
+  payRetries?: number;
+
   /** Optional callback invoked when the request transitions between L402 stages. */
   onStage?: (stage: "invoice" | "paying" | "loading") => void;
 
