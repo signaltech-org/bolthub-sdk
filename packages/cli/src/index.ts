@@ -147,8 +147,15 @@ export async function info(slug: string): Promise<void> {
   console.log(`Use: lnget --max-cost 100 ${entry.gatewayDomain}/<path>`);
 }
 
+/**
+ * Wallet adapter with an optional teardown. NWC holds a relay websocket
+ * open; a one-shot CLI must close it or the process never exits (and
+ * piped stdout never flushes — the response prints, but nobody sees it).
+ */
+export type CliWallet = WalletAdapter & { close?: () => void };
+
 /** Select a wallet adapter based on environment variables. */
-export async function createWallet(): Promise<WalletAdapter> {
+export async function createWallet(): Promise<CliWallet> {
   if (process.env.LND_REST_HOST && process.env.LND_MACAROON) {
     return new LndWallet({
       host: process.env.LND_REST_HOST,
@@ -172,12 +179,14 @@ export async function createWallet(): Promise<WalletAdapter> {
     try {
       const { NWCClient } = await import("@getalby/sdk");
       const client = new NWCClient({ nostrWalletConnectUrl: nwcUri });
-      return new NwcWallet({
+      const wallet: CliWallet = new NwcWallet({
         payInvoice: async (invoice: string) => {
           const result = await client.payInvoice({ invoice });
           return { preimage: result.preimage };
         },
       });
+      wallet.close = () => client.close();
+      return wallet;
     } catch (err) {
       console.error(
         "Failed to load @getalby/sdk for NWC support:",
@@ -250,6 +259,8 @@ async function call(
   } catch (err) {
     console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
+  } finally {
+    wallet.close?.();
   }
 }
 

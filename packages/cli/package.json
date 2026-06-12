@@ -1,6 +1,6 @@
 {
   "name": "@bolthub/cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "CLI for the bolthub L402 API marketplace — search, discover, and call paid APIs from the terminal",
   "type": "module",
   "bin": {

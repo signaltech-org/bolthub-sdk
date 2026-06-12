@@ -17,29 +17,25 @@
     },
     "packages/cli": {
       "name": "@bolthub/cli",
-      "version": "0.1.3",
+      "version": "0.1.5",
       "bin": {
         "bolthub": "./dist/index.js",
       },
       "dependencies": {
         "@bolthub/agent": "workspace:*",
+        "@getalby/sdk": "^8.0.3",
       },
-      "peerDependencies": {
-        "@getalby/sdk": ">=3",
-      },
-      "optionalPeers": [
-        "@getalby/sdk",
-      ],
     },
     "packages/mcp-bridge": {
       "name": "@bolthub/mcp-bridge",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "bin": {
         "mcp-bridge": "./dist/index.js",
       },
       "dependencies": {
         "@bolthub/agent": "workspace:*",
         "@bolthub/shared": "workspace:*",
+        "@getalby/sdk": "^8.0.3",
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "^1.12.0",
