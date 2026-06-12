@@ -1,6 +1,6 @@
 {
   "name": "@bolthub/mcp-bridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "MCP server bridge for bolthub L402 paywalled APIs — turns gateway endpoints into MCP tools with automatic Lightning payment",
   "type": "module",
   "bin": {

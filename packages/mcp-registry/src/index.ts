@@ -40,7 +40,14 @@ function resolveBudget(cliBudget?: number): number | undefined {
   return undefined;
 }
 
-async function createWallet(): Promise<WalletAdapter> {
+/**
+ * Wallet adapter with an optional teardown. NWC holds a relay websocket
+ * open; without closing it on client disconnect the process outlives the
+ * MCP session (the socket keeps the event loop alive after stdin EOF).
+ */
+type CloseableWallet = WalletAdapter & { close?: () => void };
+
+async function createWallet(): Promise<CloseableWallet> {
   if (process.env.LND_REST_HOST && process.env.LND_MACAROON) {
     console.error("[mcp-registry] Using LND wallet");
     return new LndWallet({
@@ -71,12 +78,14 @@ async function createWallet(): Promise<WalletAdapter> {
     try {
       const { NWCClient } = await import("@getalby/sdk");
       const client = new NWCClient({ nostrWalletConnectUrl: nwcUri });
-      return new NwcWallet({
+      const wallet: CloseableWallet = new NwcWallet({
         payInvoice: async (invoice: string) => {
           const result = await client.payInvoice({ invoice });
           return { preimage: result.preimage };
         },
       });
+      wallet.close = () => client.close();
+      return wallet;
     } catch (err) {
       console.error(
         "[mcp-registry] Failed to load @getalby/sdk for NWC support:",
@@ -116,6 +125,15 @@ async function main() {
 
   await startRegistryServer(apiClient, l402Client);
   console.error("[mcp-registry] MCP server started on stdio");
+
+  // Exit when the MCP client disconnects. The stdio transport stops on
+  // stdin EOF, but an NWC wallet's relay websocket keeps the event loop
+  // alive, leaving an orphaned process for clients that don't SIGTERM
+  // their servers.
+  process.stdin.on("end", () => {
+    wallet.close?.();
+    process.exit(0);
+  });
 }
 
 main().catch((err) => {
