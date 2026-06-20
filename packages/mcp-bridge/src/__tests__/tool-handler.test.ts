@@ -49,7 +49,7 @@ describe("executeToolCall", () => {
     globalThis.fetch = mock(async () => {
       callCount++;
       if (callCount === 1) {
-        return new Response(JSON.stringify({ error: "pay" }), {
+        return new Response(JSON.stringify({ error: "pay", amountSats: 10 }), {
           status: 402,
           headers: { "WWW-Authenticate": 'L402 macaroon="mac1", invoice="lnbc1000..."' },
         });
@@ -60,7 +60,10 @@ describe("executeToolCall", () => {
     const result = await executeToolCall(createTool(), {}, client);
 
     expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.content[0].text)).toEqual({ data: "paid content" });
+    // Body is returned, plus the paid-call cost is now reported (the price-less
+    // 402 previously bypassed accounting and reported "Cost: 0").
+    expect(result.content[0].text).toContain('"data": "paid content"');
+    expect(result.content[0].text).toContain("Cost: 10 sats");
     expect(wallet.payInvoice).toHaveBeenCalledWith("lnbc1000...");
   });
 

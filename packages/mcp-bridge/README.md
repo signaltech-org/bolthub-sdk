@@ -13,7 +13,7 @@ npm install -g @bolthub/mcp-bridge
 Or use directly with `npx`:
 
 ```bash
-npx @bolthub/mcp-bridge --gateway https://pokemon.gw.bolthub.ai
+npx @bolthub/mcp-bridge --gateway https://btc-intel.gw.bolthub.ai
 ```
 
 ## Configuration
@@ -23,9 +23,9 @@ Add to your MCP client config (Cursor, Claude Desktop, OpenClaw, etc.):
 ```json
 {
   "mcpServers": {
-    "pokemon-api": {
+    "btc-intel-api": {
       "command": "npx",
-      "args": ["@bolthub/mcp-bridge", "--gateway", "https://pokemon.gw.bolthub.ai"],
+      "args": ["@bolthub/mcp-bridge", "--gateway", "https://btc-intel.gw.bolthub.ai"],
       "env": {
         "NWC_URI": "<your-nwc-connection-string>"
       }
@@ -61,7 +61,7 @@ The bridge supports multiple wallet types. You only need **one**.
 Set `BUDGET_SATS` to cap total spending per session, or use `--budget`:
 
 ```bash
-npx @bolthub/mcp-bridge --gateway https://pokemon.gw.bolthub.ai --budget 1000
+npx @bolthub/mcp-bridge --gateway https://btc-intel.gw.bolthub.ai --budget 1000
 ```
 
 Guidance: `100–500` for testing, `1000–5000` for daily dev, `10000+` for production. Unset = no limit.

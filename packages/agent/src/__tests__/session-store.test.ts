@@ -1,7 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { FileSessionStore } from "../session-store";
 import type { SessionData } from "../session-store";
-import { mkdirSync, existsSync, unlinkSync, rmSync } from "fs";
+import { mkdirSync, existsSync, unlinkSync, rmSync, chmodSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { randomBytes } from "crypto";
@@ -129,6 +129,24 @@ describe("FileSessionStore", () => {
 
     const keys = [...store.entries()].map(([k]) => k).sort();
     expect(keys).toEqual(["x", "y"]);
+  });
+
+  test("persist surfaces write failures instead of swallowing them (P3)", () => {
+    const dir = join(tmpdir(), `bolthub-ro-${randomBytes(4).toString("hex")}`);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "sessions.json");
+    const store = new FileSessionStore(path);
+    chmodSync(dir, 0o500); // read-only: the atomic temp write will fail
+    try {
+      expect(() =>
+        store.set("k", { token: "t", expiresAt: Date.now() + 60_000 }),
+      ).toThrow();
+      // No leftover temp file from the failed write.
+      expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    } finally {
+      chmodSync(dir, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("creates file in non-existent directory", () => {

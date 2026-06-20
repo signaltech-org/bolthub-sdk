@@ -121,8 +121,12 @@ export class FileSessionStore implements SessionStore {
     try {
       writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
       renameSync(tmp, this.filePath);
-    } catch {
+    } catch (err) {
+      // Clean up the temp file, then surface the failure instead of silently
+      // swallowing it — otherwise set/delete/clear report success on a failed
+      // write and the caller loses data without knowing.
       try { unlinkSync(tmp); } catch { /* ignore cleanup errors */ }
+      throw err;
     }
   }
 }

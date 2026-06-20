@@ -38,12 +38,15 @@ describe("L402Client", () => {
     const wallet = createMockWallet("preimage123");
     const client = new L402Client({ wallet });
 
-    const challengeResponse = new Response(JSON.stringify({ error: "Payment Required" }), {
-      status: 402,
-      headers: {
-        "WWW-Authenticate": 'L402 macaroon="mac123", invoice="lnbc1000..."',
+    const challengeResponse = new Response(
+      JSON.stringify({ error: "Payment Required", amountSats: 10 }),
+      {
+        status: 402,
+        headers: {
+          "WWW-Authenticate": 'L402 macaroon="mac123", invoice="lnbc1000..."',
+        },
       },
-    });
+    );
     const successResponse = new Response(JSON.stringify({ data: "hello" }), { status: 200 });
 
     mockFetch([challengeResponse, successResponse]);
@@ -125,8 +128,9 @@ describe("L402Client", () => {
     expect(client.remainingBudget).toBe(950);
   });
 
-  test("extractAmount gracefully handles non-numeric amountSats", async () => {
+  test("refuses (does not pay blind) when amountSats is non-numeric and unknown", async () => {
     const wallet = createMockWallet("preimage2");
+    // Default onUnknownAmount="cap" with no maxPerRequestSats -> refuse.
     const client = new L402Client({ wallet, budgetSats: 1000 });
 
     const challengeResponse = new Response(
@@ -136,12 +140,11 @@ describe("L402Client", () => {
         headers: { "WWW-Authenticate": 'L402 macaroon="mac2", invoice="lnbc99..."' },
       },
     );
-    const successResponse = new Response(JSON.stringify({ ok: true }), { status: 200 });
 
-    mockFetch([challengeResponse, successResponse]);
+    mockFetch([challengeResponse]);
 
-    const resp = await client.get("https://example.com/api");
-    expect(resp.status).toBe(200);
+    await expect(client.get("https://example.com/api")).rejects.toBeInstanceOf(L402BudgetError);
+    expect(wallet.payInvoice).not.toHaveBeenCalled();
     expect(client.totalSpent).toBe(0);
   });
 
@@ -235,7 +238,7 @@ describe("payment retry", () => {
     const client = new L402Client({ wallet });
 
     mockFetch([
-      new Response(JSON.stringify({ error: "Payment Required" }), {
+      new Response(JSON.stringify({ error: "Payment Required", amountSats: 5 }), {
         status: 402,
         headers: { "WWW-Authenticate": 'L402 macaroon="mac", invoice="lnbc10..."' },
       }),
@@ -258,7 +261,7 @@ describe("payment retry", () => {
     const client = new L402Client({ wallet, payRetries: 1 });
 
     mockFetch([
-      new Response(JSON.stringify({ error: "Payment Required" }), {
+      new Response(JSON.stringify({ error: "Payment Required", amountSats: 5 }), {
         status: 402,
         headers: { "WWW-Authenticate": 'L402 macaroon="mac", invoice="lnbc10..."' },
       }),
@@ -279,7 +282,7 @@ describe("payment retry", () => {
     const client = new L402Client({ wallet, payRetries: 0 });
 
     mockFetch([
-      new Response(JSON.stringify({ error: "Payment Required" }), {
+      new Response(JSON.stringify({ error: "Payment Required", amountSats: 5 }), {
         status: 402,
         headers: { "WWW-Authenticate": 'L402 macaroon="mac", invoice="lnbc10..."' },
       }),

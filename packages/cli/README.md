@@ -11,7 +11,7 @@ npm install -g @bolthub/cli
 Or run directly with `npx`:
 
 ```bash
-npx @bolthub/cli search weather
+npx @bolthub/cli search bitcoin
 ```
 
 ## Commands
@@ -19,7 +19,7 @@ npx @bolthub/cli search weather
 ### `search` - Find APIs
 
 ```bash
-bolthub search weather
+bolthub search bitcoin
 bolthub search --tag finance
 bolthub search                  # list all
 ```
@@ -27,7 +27,7 @@ bolthub search                  # list all
 ### `info` - API details
 
 ```bash
-bolthub info pokemon
+bolthub info btc-intel
 ```
 
 Shows all endpoints, pricing models, and usage instructions.
@@ -35,9 +35,8 @@ Shows all endpoints, pricing models, and usage instructions.
 ### `call` - Call an endpoint
 
 ```bash
-bolthub call pokemon /v2/pokemon/pikachu
-bolthub call ai-text /v1/summarize --method POST --body '{"text":"hello"}'
-bolthub call bitcoin-data /v1/prices --max-cost 10
+bolthub call btc-intel "/v1/history/candles?timeframe=1h&limit=2"
+bolthub call btc-intel /v1/market/snapshot --max-cost 10
 ```
 
 | Option | Description |

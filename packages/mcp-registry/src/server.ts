@@ -48,7 +48,7 @@ export async function startRegistryServer(
     "get_api_details",
     "Get full details for a specific API including all endpoints, pricing, example requests/responses, and usage instructions. Use the slug from search_apis results.",
     {
-      slug: z.string().describe("The API slug from search_apis results (e.g. 'pokemon', 'weather')"),
+      slug: z.string().describe("The API slug from search_apis results (e.g. 'btc-intel')"),
     },
     async (args) => handleGetApiDetails(args, apiClient),
   );
@@ -57,7 +57,7 @@ export async function startRegistryServer(
     "preview_cost",
     "Preview the cost of calling an API endpoint without making the actual request or paying. Use this to check pricing before committing to a call.",
     {
-      slug: z.string().describe("The API slug (e.g. 'pokemon')"),
+      slug: z.string().describe("The API slug (e.g. 'btc-intel')"),
       path: z.string().optional().describe("Specific endpoint path to check. If omitted, shows pricing for all endpoints."),
       method: z.string().optional().describe("HTTP method — defaults to GET"),
     },
@@ -68,8 +68,8 @@ export async function startRegistryServer(
     "call_api",
     "Call an API endpoint on the bolthub marketplace. Handles L402 Lightning payments automatically. Use get_api_details or preview_cost first to check pricing. Returns the response along with cost and budget information.",
     {
-      slug: z.string().describe("The API slug (e.g. 'pokemon')"),
-      path: z.string().describe("The endpoint path (e.g. '/v2/pokemon/pikachu')"),
+      slug: z.string().describe("The API slug (e.g. 'btc-intel')"),
+      path: z.string().describe("The endpoint path (e.g. '/v1/history/candles')"),
       method: z
         .string()
         .optional()

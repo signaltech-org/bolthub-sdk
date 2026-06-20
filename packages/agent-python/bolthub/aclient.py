@@ -1,16 +1,15 @@
-"""L402 HTTP client with automatic payment-challenge handling."""
+"""Async L402 HTTP client, mirroring :class:`bolthub.client.L402Client`."""
 
 from __future__ import annotations
 
+import inspect
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from ._engine import (
     BudgetTracker,
-    L402BudgetError,
     L402Error,
     extract_amount,
     parse_challenge,
@@ -18,57 +17,40 @@ from ._engine import (
     session_key,
     update_session,
 )
-from .session_store import SessionStore, InMemorySessionStore
-from .wallets import WalletAdapter
+from .awallets import SyncWalletAdapter
+from .client import _SessionInfo
+from .session_store import InMemorySessionStore, SessionStore
 
-# Re-exported for backwards compatibility: callers may import these from
-# ``bolthub.client`` directly.
-__all__ = ["L402Client", "L402Error", "L402BudgetError"]
-
-
-@dataclass
-class _SessionInfo:
-    token: str
-    expires_at: float
-    balance: int | None = None
+__all__ = ["AsyncL402Client"]
 
 
-class L402Client:
-    """HTTP client that transparently handles the L402 payment protocol.
+def _ensure_async_wallet(wallet: Any) -> Any:
+    """Return an async wallet: pass async wallets through, wrap sync ones so
+    their blocking ``pay_invoice`` runs in a worker thread.
+    """
+    pay = getattr(wallet, "pay_invoice", None)
+    if inspect.iscoroutinefunction(pay):
+        return wallet
+    return SyncWalletAdapter(wallet)
 
-    When a server responds with ``402 Payment Required`` and a
-    ``WWW-Authenticate: L402`` challenge, the client automatically pays the
-    embedded Lightning invoice via the configured wallet adapter, then
-    retries the request with proof of payment.
 
-    Thread safety: a single client may be shared across threads. Budget
-    accounting is atomic, so ``total_spent`` is always exact and the budget is
-    never exceeded, even under concurrent requests. The underlying
-    ``httpx.Client`` and the default session store are themselves thread-safe.
-    The accounting lock is held only around the budget check, never across the
-    network or payment, so concurrent requests still run in parallel; one
-    consequence is that several cold-start requests to the same endpoint may
-    each pay once before a session token is cached.
+class AsyncL402Client:
+    """Async counterpart of :class:`L402Client`, built on ``httpx.AsyncClient``.
 
-    Args:
-        wallet: Lightning wallet adapter used to pay invoices.
-        max_per_request_sats: Maximum sats allowed for a single invoice.
-        budget_sats: Total sats the client may spend before refusing to pay.
-        timeout: Timeout in seconds for each HTTP round-trip.
-        session_store: Pluggable session store. Defaults to in-memory.
-        on_unknown_amount: Policy when an invoice's price cannot be determined
-            from the body, the BOLT11 invoice, or ``price_header``. ``"cap"``
-            (default) pays only up to ``max_per_request_sats`` (counted against
-            the budget) and refuses if no ceiling is set; ``"refuse"`` always
-            raises :class:`L402BudgetError`; ``"allow"`` pays blind and counts
-            nothing (legacy, unsafe).
-        price_header: Optional response header name to read the price (in sats)
-            from when the body and invoice do not carry it.
+    Same constructor arguments and the same session, budget, and
+    unknown-amount semantics. A synchronous ``WalletAdapter`` is accepted and
+    automatically run in a worker thread, so existing wallets work unchanged::
+
+        async with AsyncL402Client(LndWallet(...), budget_sats=10_000) as client:
+            resp = await client.get("https://acme.gw.bolthub.ai/v1/data")
+
+    Thread/Task safety matches :class:`L402Client`: budget accounting is atomic,
+    so the budget is always exact and never exceeded under concurrent tasks.
     """
 
     def __init__(
         self,
-        wallet: WalletAdapter,
+        wallet: Any,
         *,
         max_per_request_sats: int | None = None,
         budget_sats: int | None = None,
@@ -77,7 +59,7 @@ class L402Client:
         on_unknown_amount: str = "cap",
         price_header: str | None = None,
     ):
-        self._wallet = wallet
+        self._wallet = _ensure_async_wallet(wallet)
         self._budget_tracker = BudgetTracker(
             max_per_request_sats=max_per_request_sats,
             budget_sats=budget_sats,
@@ -85,7 +67,7 @@ class L402Client:
         )
         self._price_header = price_header
         self._timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.AsyncClient(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
 
     @property
@@ -109,15 +91,15 @@ class L402Client:
         """Remove all cached session tokens."""
         self._store.clear()
 
-    def get(self, url: str, **kwargs: Any) -> httpx.Response:
+    async def get(self, url: str, **kwargs: Any) -> httpx.Response:
         """Convenience wrapper around :meth:`request` with ``method="GET"``."""
-        return self.request("GET", url, **kwargs)
+        return await self.request("GET", url, **kwargs)
 
-    def post(self, url: str, **kwargs: Any) -> httpx.Response:
+    async def post(self, url: str, **kwargs: Any) -> httpx.Response:
         """Convenience wrapper around :meth:`request` with ``method="POST"``."""
-        return self.request("POST", url, **kwargs)
+        return await self.request("POST", url, **kwargs)
 
-    def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Send an HTTP request, automatically handling L402 challenges."""
         skey = session_key(url)
         session = self._store.get(skey)
@@ -126,13 +108,13 @@ class L402Client:
             headers = dict(kwargs.get("headers", {}))
             headers["X-Session-Token"] = session.token
             kw = {**kwargs, "headers": headers}
-            resp = self._client.request(method, url, **kw)
+            resp = await self._client.request(method, url, **kw)
             if resp.status_code != 402:
                 update_session(self._store, skey, resp.headers)
                 return resp
             self._store.delete(skey)
 
-        resp = self._client.request(method, url, **kwargs)
+        resp = await self._client.request(method, url, **kwargs)
 
         if resp.status_code != 402:
             return resp
@@ -144,13 +126,10 @@ class L402Client:
         macaroon, invoice = challenge
         amount = self._extract_amount(resp, invoice)
 
-        # Reserve budget *before* paying; roll back if the payment fails so a
-        # failed payment is never counted. Raises L402BudgetError on a limit or
-        # the unknown-amount policy.
         charge = self._budget_tracker.reserve(amount)
         try:
-            preimage = self._wallet.pay_invoice(invoice)
-        except Exception:
+            preimage = await self._wallet.pay_invoice(invoice)
+        except BaseException:
             self._budget_tracker.rollback(charge)
             raise
 
@@ -158,18 +137,18 @@ class L402Client:
         headers["Authorization"] = f"L402 {macaroon}:{preimage}"
         kwargs["headers"] = headers
 
-        resp = self._client.request(method, url, **kwargs)
+        resp = await self._client.request(method, url, **kwargs)
         update_session(self._store, skey, resp.headers)
         return resp
 
-    def close(self) -> None:
-        self._client.close()
+    async def aclose(self) -> None:
+        await self._client.aclose()
 
-    def __enter__(self) -> L402Client:
+    async def __aenter__(self) -> "AsyncL402Client":
         return self
 
-    def __exit__(self, *args: Any) -> None:
-        self.close()
+    async def __aexit__(self, *args: Any) -> None:
+        await self.aclose()
 
     def _extract_amount(self, resp: httpx.Response, invoice: str) -> int | None:
         try:

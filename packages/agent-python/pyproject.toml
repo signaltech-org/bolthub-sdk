@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bolthub"
-version = "0.1.1"
+version = "0.2.0"
 description = "L402 client for AI agents — pay Lightning invoices automatically to access paywalled APIs"
 readme = "README.md"
 license = {text = "MIT"}
@@ -13,7 +13,12 @@ dependencies = ["httpx>=0.24"]
 keywords = ["l402", "lightning", "bitcoin", "micropayments", "ai-agent", "paywall"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+# Nostr Wallet Connect (NIP-47) support for NwcWallet.from_uri / AsyncNwcWallet.
+# websockets handles the relay transport; cryptography provides AES-256-CBC and
+# SECP256K1 ECDH for NIP-04. BIP-340 event signing is vendored (pure Python), so
+# no native secp256k1 build is required.
+nwc = ["websockets>=13", "cryptography>=41"]
+dev = ["pytest", "websockets>=13", "cryptography>=41"]
 
 [project.urls]
 Homepage = "https://bolthub.ai"

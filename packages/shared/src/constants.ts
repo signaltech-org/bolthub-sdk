@@ -1,4 +1,6 @@
 export const PLATFORM_NAME = "bolthub";
+/** Display wordmark for share cards / titles: the real domain, not the bare name. */
+export const BRAND_WORDMARK = "bolthub.ai";
 export const SITE_URL = "https://bolthub.ai";
 export const API_URL = "https://api.bolthub.ai";
 export const CONTACT_EMAIL = "contact@bolthub.ai";

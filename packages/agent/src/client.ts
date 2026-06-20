@@ -1,5 +1,6 @@
 import type { L402ClientOptions, L402Challenge, L402RequestOptions, WalletAdapter } from "./types";
 import type { SessionStore, SessionData } from "./session-store";
+import { bolt11AmountSats } from "./invoice";
 
 /** Lifecycle stage reported via {@link L402ClientOptions.onStage}. */
 export type L402Stage = "invoice" | "paying" | "loading";
@@ -32,6 +33,10 @@ class InMemorySessionStore implements SessionStore {
  * Session tokens returned by gateways are cached so subsequent requests
  * to the same host+path skip the payment step until the session expires.
  *
+ * Budget is reserved before the payment await, so concurrent requests on a
+ * single client (e.g. via `Promise.all`) can never both pass the budget check
+ * and overspend — `totalSpent` stays exact and the budget is never exceeded.
+ *
  * @example
  * ```ts
  * const client = new L402Client({
@@ -45,6 +50,8 @@ export class L402Client {
   private wallet: WalletAdapter;
   private maxPerRequestSats: number;
   private budgetSats: number;
+  private onUnknownAmount: "cap" | "refuse" | "allow";
+  private priceHeader?: string;
   private timeoutMs: number;
   private payRetries: number;
   private spentSats = 0;
@@ -55,6 +62,8 @@ export class L402Client {
     this.wallet = options.wallet;
     this.maxPerRequestSats = options.maxPerRequestSats ?? Infinity;
     this.budgetSats = options.budgetSats ?? Infinity;
+    this.onUnknownAmount = options.onUnknownAmount ?? "cap";
+    this.priceHeader = options.priceHeader;
     this.timeoutMs = options.timeoutMs ?? 45_000;
     this.payRetries = options.payRetries ?? 2;
     this.onStage = options.onStage;
@@ -159,19 +168,14 @@ export class L402Client {
       throw new L402Error("Failed to parse L402 challenge from 402 response");
     }
 
-    const amountSats = await this.extractAmount(resp);
-    if (amountSats !== null) {
-      if (amountSats > this.maxPerRequestSats) {
-        throw new L402BudgetError(
-          `Invoice amount ${amountSats} sats exceeds per-request limit of ${this.maxPerRequestSats} sats`
-        );
-      }
-      if (this.spentSats + amountSats > this.budgetSats) {
-        throw new L402BudgetError(
-          `Invoice amount ${amountSats} sats would exceed total budget (spent: ${this.spentSats}, budget: ${this.budgetSats})`
-        );
-      }
-    }
+    const amountSats = await this.extractAmount(resp, challenge.invoice);
+
+    // Resolve the charge (enforcing per-request, total-budget, and the
+    // unknown-amount policy), then RESERVE it synchronously — before the
+    // `await` below — so concurrent requests can never both pass the budget
+    // check and overspend. Roll back the reservation if payment fails.
+    const charge = this.resolveCharge(amountSats);
+    this.spentSats += charge;
 
     this.onStage?.("paying");
 
@@ -180,14 +184,11 @@ export class L402Client {
       const result = await this.payInvoiceWithRetry(challenge.invoice);
       preimage = result.preimage;
     } catch (err) {
+      this.spentSats -= charge;
       throw new L402PaymentError(
         err instanceof Error ? err.message : "Payment failed",
         { cause: err },
       );
-    }
-
-    if (amountSats !== null) {
-      this.spentSats += amountSats;
     }
 
     this.onStage?.("loading");
@@ -283,12 +284,67 @@ export class L402Client {
     };
   }
 
-  private async extractAmount(resp: Response): Promise<number | null> {
+  /**
+   * Resolve the invoice price in sats from the available sources, in priority
+   * order: body `amountSats` -> decoded BOLT11 invoice -> `priceHeader`.
+   * Returns `null` when no source yields a positive amount.
+   */
+  private async extractAmount(resp: Response, invoice: string): Promise<number | null> {
+    let bodyAmount: unknown;
     try {
-      const body = await resp.clone().json();
-      return typeof body.amountSats === "number" ? body.amountSats : null;
+      bodyAmount = (await resp.clone().json())?.amountSats;
     } catch {
-      return null;
+      bodyAmount = undefined;
+    }
+    if (typeof bodyAmount === "number" && bodyAmount > 0) return Math.floor(bodyAmount);
+
+    const fromInvoice = bolt11AmountSats(invoice);
+    if (fromInvoice !== null && fromInvoice > 0) return fromInvoice;
+
+    if (this.priceHeader) {
+      const raw = resp.headers.get(this.priceHeader);
+      const parsed = raw ? parseInt(raw, 10) : NaN;
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return null;
+  }
+
+  /**
+   * Validate an invoice's charge against the per-request limit, the total
+   * budget, and the unknown-amount policy. Returns the sats to count; throws
+   * {@link L402BudgetError} when a limit is exceeded or the policy refuses.
+   */
+  private resolveCharge(amount: number | null): number {
+    if (amount === null) {
+      if (this.onUnknownAmount === "allow") return 0;
+      if (this.onUnknownAmount === "refuse") {
+        throw new L402BudgetError(
+          "Invoice amount could not be determined; refusing to pay (onUnknownAmount='refuse')"
+        );
+      }
+      // "cap": pay only up to maxPerRequestSats (counted); refuse if unset.
+      if (this.maxPerRequestSats === Infinity) {
+        throw new L402BudgetError(
+          "Invoice amount could not be determined and no maxPerRequestSats is set; refusing to pay"
+        );
+      }
+      this.checkBudget(this.maxPerRequestSats);
+      return this.maxPerRequestSats;
+    }
+    if (amount > this.maxPerRequestSats) {
+      throw new L402BudgetError(
+        `Invoice amount ${amount} sats exceeds per-request limit of ${this.maxPerRequestSats} sats`
+      );
+    }
+    this.checkBudget(amount);
+    return amount;
+  }
+
+  private checkBudget(charge: number): void {
+    if (this.spentSats + charge > this.budgetSats) {
+      throw new L402BudgetError(
+        `Invoice amount ${charge} sats would exceed total budget (spent: ${this.spentSats}, budget: ${this.budgetSats})`
+      );
     }
   }
 }

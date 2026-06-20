@@ -116,14 +116,36 @@ class PhoenixdWallet:
 
 
 class NwcWallet:
-    """Wallet adapter that delegates to a callback (e.g. from an NWC library).
+    """Wallet adapter for Nostr Wallet Connect (NIP-47).
 
-    The ``pay_fn`` callable receives a BOLT11 invoice string and must return
-    the payment preimage as a hex string.
+    Use :meth:`from_uri` to configure from a ``nostr+walletconnect://`` URI (the
+    recommended path; requires the ``bolthub[nwc]`` extra), or pass a ``pay_fn``
+    callback that receives a BOLT11 invoice and returns the preimage hex string.
     """
 
     def __init__(self, pay_fn: Callable[[str], str]):
         self._pay_fn = pay_fn
+
+    @classmethod
+    def from_uri(cls, uri: str, *, timeout: float = 30.0) -> "NwcWallet":
+        """Build a wallet from a ``nostr+walletconnect://`` connection URI.
+
+        Implements NIP-47 ``pay_invoice`` over the relay websocket. Requires the
+        optional ``bolthub[nwc]`` extra (``websockets`` + ``cryptography``);
+        a clear ``ImportError`` is raised if it is missing.
+
+        Args:
+            uri: ``nostr+walletconnect://<wallet_pubkey>?relay=<wss>&secret=<hex>``
+            timeout: seconds to wait for the wallet's payment response.
+        """
+        from . import _nwc
+
+        config = _nwc.parse_nwc_uri(uri)
+
+        def pay_fn(bolt11: str) -> str:
+            return _nwc.pay_invoice_sync(config, bolt11, timeout)
+
+        return cls(pay_fn)
 
     def pay_invoice(self, bolt11: str) -> str:
         return self._pay_fn(bolt11)

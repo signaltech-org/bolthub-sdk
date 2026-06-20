@@ -6,9 +6,9 @@ import json
 import os
 import stat
 import tempfile
+import threading
 import time
-from dataclasses import dataclass, asdict
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Protocol, Iterator
 
 
@@ -37,23 +37,34 @@ class SessionStore(Protocol):
 
 
 class InMemorySessionStore:
+    """In-memory session store. Thread-safe: each operation is guarded by an
+    internal lock and :meth:`items` returns a consistent snapshot.
+    """
+
     def __init__(self) -> None:
         self._sessions: dict[str, SessionData] = {}
+        self._lock = threading.Lock()
 
     def get(self, key: str) -> SessionData | None:
-        return self._sessions.get(key)
+        with self._lock:
+            return self._sessions.get(key)
 
     def set(self, key: str, session: SessionData) -> None:
-        self._sessions[key] = session
+        with self._lock:
+            self._sessions[key] = session
 
     def delete(self, key: str) -> None:
-        self._sessions.pop(key, None)
+        with self._lock:
+            self._sessions.pop(key, None)
 
     def clear(self) -> None:
-        self._sessions.clear()
+        with self._lock:
+            self._sessions.clear()
 
     def items(self) -> Iterator[tuple[str, SessionData]]:
-        yield from self._sessions.items()
+        with self._lock:
+            snapshot = list(self._sessions.items())
+        yield from snapshot
 
 
 _DEFAULT_DIR = os.path.join(os.path.expanduser("~"), ".bolthub")
@@ -144,14 +155,25 @@ class FileSessionStore:
         payload = json.dumps({"v": 1, "sessions": sessions_dict}, indent=2)
 
         fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")
+        closed = False
         try:
             os.write(fd, payload.encode())
             os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
             os.close(fd)
+            closed = True
             os.rename(tmp_path, self._file_path)
-        except Exception:
-            os.close(fd) if not os.get_inheritable(fd) else None
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+            tmp_path = None  # renamed into place; nothing left to clean up
+        finally:
+            # Deterministic cleanup that never double-closes the fd, never calls
+            # into a closed fd, and always removes a leftover temp file. The
+            # original exception (if any) propagates unchanged.
+            if not closed:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if tmp_path is not None:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass

@@ -20,6 +20,19 @@ export interface L402ClientOptions {
   /** Total sats the client may spend over its lifetime before refusing to pay. */
   budgetSats?: number;
 
+  /**
+   * Policy when an invoice's price cannot be determined from the body
+   * (`amountSats`), the BOLT11 invoice, or `priceHeader`. `"cap"` (default)
+   * pays only up to `maxPerRequestSats` (counted against the budget) and
+   * refuses if no ceiling is set; `"refuse"` always throws
+   * {@link L402BudgetError}; `"allow"` pays blind and counts nothing (legacy,
+   * unsafe). The default never pays a price-less challenge blind.
+   */
+  onUnknownAmount?: "cap" | "refuse" | "allow";
+
+  /** Optional response header to read the price (in sats) from when the body and invoice do not carry it. */
+  priceHeader?: string;
+
   /** Timeout in milliseconds for each HTTP round-trip. Defaults to 45 000. */
   timeoutMs?: number;
 

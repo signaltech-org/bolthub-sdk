@@ -92,6 +92,15 @@ console.log(client.totalSpent);      // sats spent so far
 console.log(client.remainingBudget); // sats remaining
 ```
 
+The price of each invoice is determined from the response body (`amountSats`),
+the BOLT11 invoice itself, or an optional `priceHeader`. If it still cannot be
+determined, `onUnknownAmount` controls what happens — by default (`"cap"`) the
+client pays only up to `maxPerRequestSats` and refuses outright if no ceiling is
+set, so a price-less challenge is never paid blind. Use `"refuse"` to always
+refuse, or `"allow"` for the legacy pay-blind behaviour. Budget accounting is
+also concurrency-safe: requests issued together (e.g. via `Promise.all`) can
+never overspend.
+
 ## Session Persistence
 
 By default sessions are kept in memory. Use `FileSessionStore` to persist

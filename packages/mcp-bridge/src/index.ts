@@ -29,7 +29,7 @@ function parseArgs(argv: string[]): { gateway: string; budgetSats?: number } {
 
   if (!gateway) {
     console.error("Usage: mcp-bridge --gateway <gateway-url> [--budget <sats>]");
-    console.error("Example: mcp-bridge --gateway https://pokemon.gw.bolthub.ai --budget 1000");
+    console.error("Example: mcp-bridge --gateway https://btc-intel.gw.bolthub.ai --budget 1000");
     process.exit(1);
   }
 

@@ -286,10 +286,10 @@ Environment:
   NWC_URI                              Easiest wallet (slower)
 
 Examples:
-  bolthub search weather
-  bolthub info bitcoin-data
-  bolthub call bitcoin-data /v1/prices --max-cost 10
-  bolthub call ai-text /v1/summarize --method POST --body '{"text":"hello"}'
+  bolthub search bitcoin
+  bolthub info btc-intel
+  bolthub call btc-intel /v1/market/snapshot --max-cost 10
+  bolthub call btc-intel "/v1/history/candles?timeframe=1h&limit=2" --max-cost 2
 `);
 }
 

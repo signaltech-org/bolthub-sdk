@@ -98,7 +98,7 @@ search_apis()  // list all available APIs
 Get full details for a specific API: endpoints, pricing, examples.
 
 ```
-get_api_details({ slug: "pokemon" })
+get_api_details({ slug: "btc-intel" })
 ```
 
 ### `preview_cost`
@@ -106,8 +106,8 @@ get_api_details({ slug: "pokemon" })
 Preview the cost of calling an API endpoint without making the request or paying.
 
 ```
-preview_cost({ slug: "pokemon" })
-preview_cost({ slug: "pokemon", path: "/v2/pokemon/pikachu" })
+preview_cost({ slug: "btc-intel" })
+preview_cost({ slug: "btc-intel", path: "/v1/history/candles" })
 ```
 
 ### `call_api`
@@ -115,7 +115,7 @@ preview_cost({ slug: "pokemon", path: "/v2/pokemon/pikachu" })
 Call any API endpoint. Lightning payments are handled automatically.
 
 ```
-call_api({ slug: "pokemon", path: "/v2/pokemon/pikachu", method: "GET" })
+call_api({ slug: "btc-intel", path: "/v1/history/candles", method: "GET" })
 call_api({ slug: "my-api", path: "/analyze", method: "POST", body: { text: "hello" } })
 ```
 
