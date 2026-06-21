@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bolthub"
-version = "0.2.0"
+version = "0.2.1"
 description = "L402 client for AI agents — pay Lightning invoices automatically to access paywalled APIs"
 readme = "README.md"
 license = {text = "MIT"}

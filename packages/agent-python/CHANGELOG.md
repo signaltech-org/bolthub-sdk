@@ -4,7 +4,22 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - Unreleased
+## [0.2.1] - 2026-06-22
+
+### Fixed
+
+- **`L402Auth` now buffers the request body and reads the 402 challenge body
+  explicitly.** The `requires_request_body` / `requires_response_body` class
+  flags were inert: httpx consults them only in the base auth-flow methods,
+  which `L402Auth` overrides. As a result a body-supplied `amountSats` could be
+  missed, and a streaming retry relied on incidental behaviour. The sync and
+  async flows now call `request.read()` / `await request.aread()`, and read
+  only the 402 response, leaving the post-payment response untouched. A
+  streaming `client.stream("GET", ...)` is therefore replayed after the 402 and
+  delivered incrementally (the flow used for paywalled SSE / `time_pass`
+  streams).
+
+## [0.2.0] - 2026-06-20
 
 ### Added
 
