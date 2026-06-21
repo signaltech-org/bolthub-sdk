@@ -52,10 +52,12 @@ class L402Auth(httpx.Auth):
     single instance may back a client shared across threads or async tasks.
     """
 
-    # Read the full 402 body so a body-supplied ``amountSats`` is available; and
-    # buffer the request body so a POST can be safely re-sent after payment.
-    requires_request_body = True
-    requires_response_body = True
+    # NOTE: httpx's ``requires_request_body`` / ``requires_response_body``
+    # class flags are intentionally NOT set. They are consulted only by the
+    # base ``httpx.Auth.{sync,async}_auth_flow``; we override those methods,
+    # so the flags would be dead code. The flows below instead buffer the
+    # request body and read the 402 body EXPLICITLY, and crucially never
+    # read the post-payment response, so a streaming GET keeps streaming.
 
     def __init__(
         self,
@@ -93,6 +95,8 @@ class L402Auth(httpx.Auth):
     # ------------------------------------------------------------------ flows
 
     def sync_auth_flow(self, request: httpx.Request):
+        # Buffer the request body so a POST can be safely re-sent after payment.
+        request.read()
         skey = self._attach_session(request)
         response = yield request
 
@@ -100,6 +104,11 @@ class L402Auth(httpx.Auth):
             update_session(self._store, skey, response.headers)
             return
 
+        # Read the (small) 402 body so a body-supplied ``amountSats`` is
+        # available to _begin_payment. Only this challenge response is read;
+        # the post-payment response below is never read here, so a streaming
+        # response stays unbuffered.
+        response.read()
         macaroon, invoice, charge = self._begin_payment(request, response, skey)
         try:
             preimage = self._wallet.pay_invoice(invoice)
@@ -117,6 +126,8 @@ class L402Auth(httpx.Auth):
         update_session(self._store, skey, authed.headers)
 
     async def async_auth_flow(self, request: httpx.Request):
+        # Buffer the request body so a POST can be safely re-sent after payment.
+        await request.aread()
         skey = self._attach_session(request)
         response = yield request
 
@@ -124,6 +135,11 @@ class L402Auth(httpx.Auth):
             update_session(self._store, skey, response.headers)
             return
 
+        # Read the (small) 402 body so a body-supplied ``amountSats`` is
+        # available to _begin_payment. Only this challenge response is read;
+        # the post-payment response below is never read here, so a streaming
+        # response stays unbuffered.
+        await response.aread()
         macaroon, invoice, charge = self._begin_payment(request, response, skey)
         try:
             preimage = await self._pay_async(invoice)

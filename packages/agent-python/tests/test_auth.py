@@ -86,10 +86,10 @@ class TestSyncAuth:
         assert wallet.calls == []
         assert auth.total_spent == 0
 
-    def test_reads_body_price_via_requires_response_body(self):
-        # Invoice is non-decodable, so the only price signal is the body. If the
-        # body were not read, the amount would be unknown and "cap" with no
-        # ceiling would refuse instead of paying 30.
+    def test_reads_body_price_from_402(self):
+        # Invoice is non-decodable, so the only price signal is the body. The
+        # flow reads the 402 body explicitly; if it didn't, the amount would
+        # be unknown and "cap" with no ceiling would refuse instead of 30.
         wallet = MockWallet()
         auth = L402Auth(wallet, budget_sats=1000)
         handler, _ = gateway(amount_sats=30, invoice="lnbcplaceholder")

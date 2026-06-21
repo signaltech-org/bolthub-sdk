@@ -27,6 +27,7 @@ export const tenantSchema = z.object({
   emailWeeklySummary: z.boolean().default(false),
   billingStatus: billingStatusEnum,
   trialEndsAt: z.string().datetime().nullable(),
+  maxConcurrentStreams: z.number().int().positive().nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
@@ -70,6 +71,9 @@ export const endpointSchema = z.object({
   cacheTtlSeconds: z.number().int().positive().nullable().optional(),
   rateLimitPerMinute: z.number().int().positive().nullable().optional(),
   freeTryEnabled: z.boolean().default(false),
+  streaming: z.boolean().default(false),
+  maxStreamSeconds: z.number().int().positive().nullable().optional(),
+  idleTimeoutSeconds: z.number().int().positive().nullable().optional(),
   lastHealthCheckAt: z.string().datetime().nullable().optional(),
   isHealthy: z.boolean().default(true),
   uptimePercentage: z.string().nullable().optional(),
@@ -169,6 +173,9 @@ export const createEndpointSchema = z.object({
   cacheTtlSeconds: z.number().int().positive().optional(),
   rateLimitPerMinute: z.number().int().positive().optional(),
   freeTryEnabled: z.boolean().optional(),
+  streaming: z.boolean().optional(),
+  maxStreamSeconds: z.number().int().positive().optional(),
+  idleTimeoutSeconds: z.number().int().positive().optional(),
 });
 
 export const createPricingRuleSchema = z.object({
