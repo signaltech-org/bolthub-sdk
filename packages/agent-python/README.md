@@ -191,6 +191,27 @@ client = L402Client(
 )
 ```
 
+## Delegation (attenuation)
+
+A paid L402 macaroon can be *narrowed offline* and handed to a sub-agent, so a
+parent agent can delegate a restricted credential without re-paying. Needs the
+optional `pymacaroons` dependency (`pip install bolthub[delegation]`):
+
+```python
+import time
+from bolthub import attenuate
+
+# `macaroon` is the value from `Authorization: L402 <macaroon>:<preimage>`.
+restricted = attenuate(
+    macaroon,
+    method="GET",
+    valid_until=int(time.time() * 1000) + 60_000,  # 60s, tighter than the original
+)
+# Give `restricted` plus the SAME preimage to the sub-agent.
+```
+
+The gateway enforces every caveat down the chain (most restrictive wins).
+
 ## API Reference
 
 | Export | Description |
@@ -208,6 +229,7 @@ client = L402Client(
 | `SessionStore` | Protocol for custom session storage |
 | `L402Error` | Base exception for L402 failures |
 | `L402BudgetError` | Raised when budget limits are exceeded |
+| `attenuate(...)` | Narrow a macaroon offline to delegate a restricted credential (needs `bolthub[delegation]`) |
 
 ## License
 

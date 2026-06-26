@@ -14,6 +14,7 @@ export const tenantSchema = z.object({
   slug: z.string().min(3).max(63),
   name: z.string().min(1).max(255),
   description: z.string().nullable().optional(),
+  website: z.string().url().nullable().optional(),
   tags: z.array(z.string()).optional().default([]),
   directoryListed: z.boolean().default(false),
   status: tenantStatusEnum,
@@ -49,6 +50,7 @@ export const originSchema = z.object({
   baseUrl: z.string().url(),
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
+  imageUrl: z.string().url().nullable().optional(),
   healthNotificationsEnabled: z.boolean().default(true),
   createdAt: z.string().datetime(),
 });
@@ -163,7 +165,10 @@ export const createEndpointSchema = z.object({
   path: z.string().min(1).regex(/^\//, { message: "Path must start with /" }),
   originUrl: z.string().url().optional(),
   originId: z.string().uuid().optional(),
-  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]).default("GET"),
+  // Listable methods are restricted to data (GET/HEAD) and computation (POST).
+  // Mutating verbs (PUT/PATCH/DELETE) don't fit anonymous pay-per-call — they
+  // mutate caller-owned state, which needs an identity L402 doesn't provide.
+  method: z.enum(["GET", "POST", "HEAD"]).default("GET"),
   title: z.string().max(255).optional(),
   description: z.string().max(1000).optional(),
   docsUrl: z.string().url().max(1000).optional(),
@@ -173,6 +178,7 @@ export const createEndpointSchema = z.object({
   cacheTtlSeconds: z.number().int().positive().optional(),
   rateLimitPerMinute: z.number().int().positive().optional(),
   freeTryEnabled: z.boolean().optional(),
+  liveSampleEnabled: z.boolean().optional(),
   streaming: z.boolean().optional(),
   maxStreamSeconds: z.number().int().positive().optional(),
   idleTimeoutSeconds: z.number().int().positive().optional(),

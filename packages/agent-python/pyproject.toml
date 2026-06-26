@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bolthub"
-version = "0.2.1"
+version = "0.3.0"
 description = "L402 client for AI agents — pay Lightning invoices automatically to access paywalled APIs"
 readme = "README.md"
 license = {text = "MIT"}
@@ -18,7 +18,10 @@ keywords = ["l402", "lightning", "bitcoin", "micropayments", "ai-agent", "paywal
 # SECP256K1 ECDH for NIP-04. BIP-340 event signing is vendored (pure Python), so
 # no native secp256k1 build is required.
 nwc = ["websockets>=13", "cryptography>=41"]
-dev = ["pytest", "websockets>=13", "cryptography>=41"]
+# Offline macaroon attenuation for delegating a restricted credential to a
+# sub-agent (bolthub.attenuate). pymacaroons handles the libmacaroons v2 binary.
+delegation = ["pymacaroons>=0.13"]
+dev = ["pytest", "websockets>=13", "cryptography>=41", "pymacaroons>=0.13"]
 
 [project.urls]
 Homepage = "https://bolthub.ai"

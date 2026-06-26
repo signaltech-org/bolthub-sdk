@@ -11,6 +11,8 @@ export type { LndWalletOptions } from "./wallets/lnd";
 export type { LnbitsWalletOptions } from "./wallets/lnbits";
 export type { NwcConnection } from "./wallets/nwc";
 export type { PhoenixdWalletOptions } from "./wallets/phoenixd";
+export { attenuate } from "./delegate";
+export type { AttenuateOptions } from "./delegate";
 
 import { L402Client as _L402Client } from "./client";
 import type { L402ClientOptions } from "./types";

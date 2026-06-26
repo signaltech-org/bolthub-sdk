@@ -4,6 +4,16 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-26
+
+### Added
+
+- **`attenuate(macaroon, *, method=, valid_until=)`** for offline delegation:
+  narrow an L402 macaroon by appending `method` and/or `valid_until` first-party
+  caveats, so a parent agent can hand a sub-agent a restricted credential
+  without re-paying. Needs the new optional dependency:
+  `pip install bolthub[delegation]`.
+
 ## [0.2.1] - 2026-06-22
 
 ### Fixed

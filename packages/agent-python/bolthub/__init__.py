@@ -16,6 +16,7 @@ from .session_store import (
     SessionStore,
     SessionData,
 )
+from .delegate import attenuate
 
 __all__ = [
     "L402Client",
@@ -38,4 +39,5 @@ __all__ = [
     "InMemorySessionStore",
     "SessionStore",
     "SessionData",
+    "attenuate",
 ]

@@ -42,7 +42,13 @@ export function getGatewayUrl(slug: string, path = "/"): string {
   return `https://${slug}.${GATEWAY_DOMAIN}${normalizedPath}`;
 }
 
-export const TRIAL_DURATION_DAYS = 14;
+export const TRIAL_DURATION_DAYS = 30;
+
+// Human-facing label for the trial length, kept in sync with
+// TRIAL_DURATION_DAYS. The constant above is the source of truth for date
+// math; this string is what marketing and email copy render, so "1-month
+// free trial" reads naturally instead of "30-day free trial".
+export const TRIAL_DURATION_LABEL = "1-month";
 
 export const MONTHLY_BASE_FEE_SATS = 4_000;
 
@@ -54,6 +60,16 @@ export const MONTHLY_BASE_FEE_SATS = 4_000;
 export const BILLING_CYCLE_DAYS = 30;
 export const GRACE_PERIOD_HOURS = 7 * 24; // 7 days
 export const MAX_PAYMENT_RETRIES = 3;
+
+// Node Launcher pricing. Self-hosting a Lightning node on a VPS starts around
+// this much per month on the cheapest supported provider (LunaNode, billed in
+// USD). Single source for the "deploy your own node from ~$X/mo" marketing
+// hook, so a price move is a one-line change. The deploy flow always fetches
+// exact, live per-size/region prices from each provider's API; EUR hosts
+// (Hetzner, Scaleway) are intentionally never quoted with a hardcoded USD
+// figure in marketing because both the price and the FX rate drift.
+export const NODE_PRICE_FROM_USD = 3.5;
+export const NODE_PRICE_FROM_DISPLAY = `~$${NODE_PRICE_FROM_USD.toFixed(2)}`;
 
 export interface UsageTier {
   readonly upTo: number;

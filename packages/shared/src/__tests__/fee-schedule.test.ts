@@ -4,6 +4,7 @@ import {
   FREE_REQUESTS_PER_MONTH,
   MONTHLY_USAGE_TIERS,
   TRIAL_DURATION_DAYS,
+  TRIAL_DURATION_LABEL,
   BILLING_CYCLE_DAYS,
   GRACE_PERIOD_HOURS,
   MAX_PAYMENT_RETRIES,
@@ -20,8 +21,12 @@ describe("pricing constants", () => {
     expect(FREE_REQUESTS_PER_MONTH).toBe(400);
   });
 
-  test("trial is 14 days", () => {
-    expect(TRIAL_DURATION_DAYS).toBe(14);
+  test("trial is 30 days (1 month)", () => {
+    expect(TRIAL_DURATION_DAYS).toBe(30);
+  });
+
+  test("trial copy label matches the trial duration", () => {
+    expect(TRIAL_DURATION_LABEL).toBe("1-month");
   });
 
   test("billing cycle is 30 days", () => {

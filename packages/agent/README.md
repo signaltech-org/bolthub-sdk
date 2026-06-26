@@ -115,6 +115,26 @@ const client = new L402Client({
 });
 ```
 
+## Delegation (attenuation)
+
+A real L402 macaroon can be *narrowed offline* and handed to a sub-agent, so a
+parent agent that paid for access can delegate a restricted credential without
+re-paying or calling bolthub:
+
+```ts
+import { attenuate } from "@bolthub/agent";
+
+// `macaroon` is the value from `Authorization: L402 <macaroon>:<preimage>`.
+const restricted = attenuate(macaroon, {
+  method: "GET", // only GET requests
+  validUntil: Date.now() + 60_000, // expires in 60s, tighter than the original
+});
+// Give `restricted` plus the SAME preimage to the sub-agent, which sends
+//   Authorization: L402 <restricted>:<preimage>
+```
+
+The gateway enforces every caveat down the chain (most restrictive wins).
+
 ## API Reference
 
 | Export | Description |
@@ -128,6 +148,7 @@ const client = new L402Client({
 | `isWebLnAvailable()` | Check if a WebLN provider exists |
 | `FileSessionStore` | Disk-backed session token persistence |
 | `createL402Client()` | Shorthand factory for `L402Client` |
+| `attenuate()` | Narrow a macaroon offline to delegate a restricted credential |
 | `WalletAdapter` | Interface to implement for custom wallets |
 | `L402Error` | Base error class for L402 failures |
 | `L402BudgetError` | Thrown when budget limits are exceeded |
