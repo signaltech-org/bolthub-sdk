@@ -1,4 +1,4 @@
-import { importMacaroon } from "macaroon";
+import { importMacaroon, type Macaroon } from "macaroon";
 
 export interface AttenuateOptions {
   /** Restrict the credential to a single HTTP method, e.g. "GET". */
@@ -30,7 +30,59 @@ export function attenuate(macaroonB64: string, opts: AttenuateOptions): string {
   }
   const m = importMacaroon(base64ToBytes(macaroonB64));
   for (const c of caveats) m.addFirstPartyCaveat(c);
-  return bytesToBase64(m.exportBinary());
+  return bytesToBase64(exportMacaroonBinaryV2(m));
+}
+
+// Serialise a macaroon to the libmacaroons v2 binary format from the library's
+// public byte getters. We do NOT use the library's own `exportBinary()`: its
+// internal ByteBuffer never initialises a capacity field, so its grow check
+// (`minCap <= this._capacity`, i.e. `<= undefined`) is always false and the
+// buffer doubles on every append. A macaroon with several caveats (every real
+// L402 token: header + 4 binding caveats + signature) overflows the max typed
+// array size and throws `RangeError: length too large`. The crypto — the HMAC
+// signature chaining in `addFirstPartyCaveat` — is unaffected and stays the
+// library's; only the framing below is ours. Field types and section layout
+// follow the spec: version, header (location?, identifier, EOS), each caveat
+// (location?, identifier, vid?, EOS), an end-of-caveats EOS, then the signature.
+function exportMacaroonBinaryV2(m: Macaroon): Uint8Array {
+  const FIELD_EOS = 0;
+  const FIELD_LOCATION = 1;
+  const FIELD_IDENTIFIER = 2;
+  const FIELD_VID = 4;
+  const FIELD_SIGNATURE = 6;
+  const out: number[] = [];
+  const uvarint = (x: number) => {
+    while (x >= 0x80) {
+      out.push((x & 0x7f) | 0x80);
+      x >>>= 7;
+    }
+    out.push(x);
+  };
+  const field = (type: number, data?: Uint8Array) => {
+    uvarint(type);
+    if (data) {
+      uvarint(data.length);
+      for (let i = 0; i < data.length; i++) out.push(data[i]);
+    }
+  };
+
+  out.push(2); // version
+  if (m.location) field(FIELD_LOCATION, utf8(m.location));
+  field(FIELD_IDENTIFIER, m.identifier);
+  field(FIELD_EOS);
+  for (const c of m.caveats) {
+    if (c.location) field(FIELD_LOCATION, utf8(c.location));
+    field(FIELD_IDENTIFIER, c.identifier);
+    if (c.vid) field(FIELD_VID, c.vid);
+    field(FIELD_EOS);
+  }
+  field(FIELD_EOS); // end of caveats
+  field(FIELD_SIGNATURE, m.signature);
+  return Uint8Array.from(out);
+}
+
+function utf8(s: string): Uint8Array {
+  return new TextEncoder().encode(s);
 }
 
 function buildCaveats(opts: AttenuateOptions): string[] {

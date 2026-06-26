@@ -4,6 +4,21 @@ All notable changes to `@bolthub/agent` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-06-26
+
+### Fixed
+
+- **`attenuate()` no longer throws on real L402 macaroons.** Every macaroon the
+  bolthub gateway mints carries four binding caveats (payment_hash, tenant_id,
+  endpoint_id, expires_at). On a macaroon with that many fields, the bundled
+  `macaroon` library's `exportBinary()` overflowed — its internal byte buffer
+  never initialised a capacity, so it doubled on every append until it exceeded
+  the maximum array size (`RangeError: length too large`). 0.3.0's `attenuate()`
+  therefore failed on every real token. We now serialise the v2 binary ourselves
+  from the library's public byte getters; the signature chaining is unchanged.
+  Verified end to end against the production gateway (a delegated, attenuated
+  call returns data; method and valid_until caveats are enforced).
+
 ## [0.3.0] - 2026-06-26
 
 ### Added
