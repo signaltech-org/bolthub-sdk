@@ -4,6 +4,7 @@ import { z } from "zod";
 import pkg from "../package.json" with { type: "json" };
 import type { McpToolDefinition } from "./openapi-to-tools.js";
 import { executeToolCall } from "./tool-handler.js";
+import { loadActionManifest, wrapWithReceiptGate } from "./receipt-gate.js";
 import type { L402Client } from "@bolthub/agent";
 
 /**
@@ -60,14 +61,24 @@ export async function startMcpServer(
     version: pkg.version,
   });
 
+  // OPT-IN: when an operator points BOLTHUB_AGENT_ACTIONS at an Action Risk
+  // Manifest, tools it marks `receipt_required` gain a Receipt Required gate in
+  // front of their L402 auto-payment. When unset (the default), `manifest` is
+  // null and `wrapWithReceiptGate` returns the handler unchanged — no gate, no
+  // behavior change. See packages/mcp-bridge/src/receipt-gate.ts.
+  const actionManifest = loadActionManifest();
+
   for (const tool of tools) {
     const zodShape = buildZodShape(tool);
+
+    const handler = (args: Record<string, unknown>) =>
+      executeToolCall(tool, args, l402Client);
 
     server.tool(
       tool.name,
       tool.description,
       zodShape,
-      async (args) => executeToolCall(tool, args as Record<string, unknown>, l402Client),
+      (args) => wrapWithReceiptGate(tool, handler, actionManifest)(args as Record<string, unknown>),
     );
   }
 

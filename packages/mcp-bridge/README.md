@@ -90,6 +90,34 @@ For building custom agents without MCP, use our SDKs directly:
 - **TypeScript:** `npm install @bolthub/agent`
 - **Python:** `pip install bolthub`
 
+## Receipt Required (opt-in)
+
+By default, every discovered tool auto-pays its L402 invoice with only `BUDGET_SATS` as a guard — a numeric cap, not a human decision. For high-value or irreversible spends you can **opt in** to also requiring a verifiable *authorization receipt*: proof a named human approved this exact tool at this price, before any sats move.
+
+This is **off by default and fully backward-compatible** — with no manifest configured, tool handlers are registered exactly as before. To enable it, point `BOLTHUB_AGENT_ACTIONS` at an [Action Risk Manifest](./agent-actions.example.json) listing which tools need a receipt:
+
+```bash
+BOLTHUB_AGENT_ACTIONS=./agent-actions.json \
+  npx @bolthub/mcp-bridge --gateway https://btc-intel.gw.bolthub.ai
+```
+
+For a tool marked `receipt_required`, the bridge gates its payment:
+
+| Check | Behavior |
+|---|---|
+| Missing receipt | `428 Receipt Required` (refused — no payment) |
+| Valid receipt | the tool runs, the invoice is paid, receipt is one-time consumed |
+| Replayed receipt | refused (one-time consumption — see store note) |
+| Forged / wrong tool or amount | refused (signature / action-binding fails) |
+
+The agent presents the receipt in the tool args as `_emilia_receipt` (and `_emilia_amount_sats` for the price it was issued for). The receipt is bound to the **exact tool and price ceiling**, so an approval for one tool/amount can't authorize a different tool or a larger payment. Tools *not* listed pass straight through, unchanged.
+
+> **Replay scope:** one-time consumption holds within the configured store. The **default store is process-local (in-memory)** — it does *not* survive a restart or span multiple bridge instances. For durable / multi-instance replay protection, pass a durable `store` ({ has, add }) to the gate (Redis/DB).
+
+Verification is offline — no API key, no account, no bolthub or EMILIA server trusted. It runs the open reference verifier in [`@emilia-protocol/require-receipt`](https://www.npmjs.com/package/@emilia-protocol/require-receipt) (Apache-2.0). This is *not* auth or permissions; it's portable accountability evidence the operator keeps for their own liability — a *necessary, not sufficient* condition. Spec: IETF Internet-Draft `draft-schrock-ep-authorization-receipts`. Background and the four-check conformance report (RR-1): [Fire Drill report](https://www.emiliaprotocol.ai/fire-drill/report/signaltech-bolthub-sdk).
+
+> **Secure by default:** the gate will **not** accept a self-signed (inline-key) receipt for an L402 payment by default. Pin the issuer key(s) you trust via `BOLTHUB_RECEIPT_TRUSTED_KEYS` (comma-separated base64url SPKI). With `receipt_required` enabled and no trusted key configured, the gate **fails closed** — the payment is refused (`receipt_enforcement_misconfigured`), never made under an untrusted key. `BOLTHUB_RECEIPT_ALLOW_INLINE_KEY=1` re-enables inline keys for **non-production demos only**.
+
 ## Security & trust
 
 This package handles your Lightning wallet credentials, so here is exactly what it does with them:

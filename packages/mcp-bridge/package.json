@@ -17,6 +17,7 @@
   "dependencies": {
     "@bolthub/agent": "workspace:*",
     "@bolthub/shared": "workspace:*",
+    "@emilia-protocol/require-receipt": "^0.4.1",
     "@getalby/sdk": "^8.0.3"
   },
   "devDependencies": {
