@@ -107,14 +107,16 @@ For a tool marked `receipt_required`, the bridge gates its payment:
 |---|---|
 | Missing receipt | `428 Receipt Required` (refused — no payment) |
 | Valid receipt | the tool runs, the invoice is paid, receipt is one-time consumed |
-| Replayed receipt | refused (one-time consumption) |
+| Replayed receipt | refused (one-time consumption — see store note) |
 | Forged / wrong tool or amount | refused (signature / action-binding fails) |
 
 The agent presents the receipt in the tool args as `_emilia_receipt` (and `_emilia_amount_sats` for the price it was issued for). The receipt is bound to the **exact tool and price ceiling**, so an approval for one tool/amount can't authorize a different tool or a larger payment. Tools *not* listed pass straight through, unchanged.
 
+> **Replay scope:** one-time consumption holds within the configured store. The **default store is process-local (in-memory)** — it does *not* survive a restart or span multiple bridge instances. For durable / multi-instance replay protection, pass a durable `store` ({ has, add }) to the gate (Redis/DB).
+
 Verification is offline — no API key, no account, no bolthub or EMILIA server trusted. It runs the open reference verifier in [`@emilia-protocol/require-receipt`](https://www.npmjs.com/package/@emilia-protocol/require-receipt) (Apache-2.0). This is *not* auth or permissions; it's portable accountability evidence the operator keeps for their own liability — a *necessary, not sufficient* condition. Spec: IETF Internet-Draft `draft-schrock-ep-authorization-receipts`. Background and the four-check conformance report (RR-1): [Fire Drill report](https://www.emiliaprotocol.ai/fire-drill/report/signaltech-bolthub-sdk).
 
-> **Production:** `src/receipt-gate.ts` uses `allowInlineKey: true` for zero-setup verification (proves integrity, not issuer trust). In production, pin `trustedKeys: [<issuer SPKI>]` and drop `allowInlineKey` so a self-signed receipt can't authorize a payment.
+> **Secure by default:** the gate will **not** accept a self-signed (inline-key) receipt for an L402 payment by default. Pin the issuer key(s) you trust via `BOLTHUB_RECEIPT_TRUSTED_KEYS` (comma-separated base64url SPKI). With `receipt_required` enabled and no trusted key configured, the gate **fails closed** — the payment is refused (`receipt_enforcement_misconfigured`), never made under an untrusted key. `BOLTHUB_RECEIPT_ALLOW_INLINE_KEY=1` re-enables inline keys for **non-production demos only**.
 
 ## Security & trust
 

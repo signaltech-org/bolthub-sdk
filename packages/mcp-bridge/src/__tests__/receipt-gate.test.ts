@@ -24,6 +24,12 @@ import { L402Client } from "@bolthub/agent";
 import type { WalletAdapter } from "@bolthub/agent";
 import type { McpToolDefinition } from "../openapi-to-tools";
 
+// These conformance tests mint a fresh key per receipt, so they run the gate in
+// explicit NON-PRODUCTION inline mode. Production pins BOLTHUB_RECEIPT_TRUSTED_KEYS
+// instead; the "fails closed" test below proves the secure default refuses an
+// L402 payment when no trusted key is configured.
+process.env.BOLTHUB_RECEIPT_ALLOW_INLINE_KEY = "1";
+
 const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -194,5 +200,28 @@ describe("wrapWithReceiptGate — tool + amount binding", () => {
     const replay = await wrapped({ [RECEIPT_ARG]: receipt, [RECEIPT_AMOUNT_ARG]: 1000 });
     expect(replay.isError).toBe(true);
     expect(JSON.parse(replay.content[0].text).rejected.reason).toBe("replay_refused");
+  });
+});
+
+describe("wrapWithReceiptGate — secure default (fails closed)", () => {
+  test("enforcement on with NO trusted key refuses the payment (does not pay)", async () => {
+    const prevInline = process.env.BOLTHUB_RECEIPT_ALLOW_INLINE_KEY;
+    const prevKeys = process.env.BOLTHUB_RECEIPT_TRUSTED_KEYS;
+    delete process.env.BOLTHUB_RECEIPT_ALLOW_INLINE_KEY;
+    delete process.env.BOLTHUB_RECEIPT_TRUSTED_KEYS;
+    try {
+      const tool = createTool();
+      const inner = mock(async () => ({ content: [{ type: "text" as const, text: JSON.stringify({ paid: true }) }] }));
+      const wrapped = wrapWithReceiptGate(tool, inner, MANIFEST);
+      // Even a well-formed receipt must NOT pay when no issuer key is trusted —
+      // accepting a self-signed receipt for an L402 payment is the unsafe default we refuse.
+      const out = await wrapped({ [RECEIPT_ARG]: issueReceipt(`l402.pay:${DANGEROUS_TOOL}:1000`), [RECEIPT_AMOUNT_ARG]: 1000 });
+      expect(out.isError).toBe(true);
+      expect(JSON.parse(out.content[0].text).rejected.reason).toBe("receipt_enforcement_misconfigured");
+      expect(inner).not.toHaveBeenCalled();
+    } finally {
+      if (prevInline === undefined) delete process.env.BOLTHUB_RECEIPT_ALLOW_INLINE_KEY; else process.env.BOLTHUB_RECEIPT_ALLOW_INLINE_KEY = prevInline;
+      if (prevKeys === undefined) delete process.env.BOLTHUB_RECEIPT_TRUSTED_KEYS; else process.env.BOLTHUB_RECEIPT_TRUSTED_KEYS = prevKeys;
+    }
   });
 });

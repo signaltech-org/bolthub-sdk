@@ -82,18 +82,32 @@ export function loadActionManifest(
   }
 }
 
+/** Issuer key(s) the operator trusts (comma-separated base64url SPKI). Receipts
+ *  not signed by one of these are refused. Set this to enable enforcement. */
+function trustedReceiptKeys(env: Record<string, string | undefined> = process.env): string[] {
+  return (env.BOLTHUB_RECEIPT_TRUSTED_KEYS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+/** Explicit NON-PRODUCTION opt-in to accept self-signed (inline-key) receipts. */
+function allowInlineReceiptKey(env: Record<string, string | undefined> = process.env): boolean {
+  return /^(1|true)$/i.test(env.BOLTHUB_RECEIPT_ALLOW_INLINE_KEY ?? "");
+}
+
 // One gate per action type (each keeps its own one-time-consumption store).
+// NOTE: the default store is process-local (in-memory) — it does NOT survive a
+// restart or span multiple bridge instances. For durable / multi-instance
+// one-time consumption, pass a durable `store` ({ has, add }) below.
 const gates = new Map<string, ReturnType<typeof makeReceiptGate>>();
 function gateFor(req: ActionRequirement, manifestUrl?: string) {
   const key = req.action_type ?? req.match?.tool ?? "action";
   let gate = gates.get(key);
   if (!gate) {
+    const trusted = trustedReceiptKeys();
     gate = makeReceiptGate({
       action: req.action_type ?? key,
-      // DEMO/dev default: trust the receipt's own inline key (proves integrity,
-      // not issuer trust). PRODUCTION: set `trustedKeys: [<issuer SPKI>]` and
-      // drop `allowInlineKey` so a self-signed receipt can't authorize a payment.
-      allowInlineKey: true,
+      // Secure by default: pin the issuer key(s) you trust. Inline (self-signed)
+      // keys are accepted only when the operator explicitly opts in (non-prod);
+      // dispatch fails closed before reaching here if neither is configured.
+      ...(trusted.length ? { trustedKeys: trusted } : { allowInlineKey: true }),
       maxAgeSec: req.max_age_sec,
       statusCode: RECEIPT_REQUIRED_STATUS,
       manifestUrl,
@@ -142,6 +156,19 @@ export function wrapWithReceiptGate(
   const manifestUrl = manifest.service?.manifest_url;
 
   return async (args: Record<string, unknown>): Promise<ToolResult> => {
+    // FAIL CLOSED: this tool is receipt_required, but no issuer key is trusted
+    // and inline keys are not explicitly enabled. Refuse the payment rather than
+    // accept a self-signed receipt for a real-sats L402 transaction.
+    if (!trustedReceiptKeys().length && !allowInlineReceiptKey()) {
+      return refusalResult(500, {
+        rejected: { reason: "receipt_enforcement_misconfigured" },
+        detail:
+          "Set BOLTHUB_RECEIPT_TRUSTED_KEYS to the issuer key(s) you trust "
+          + "(or BOLTHUB_RECEIPT_ALLOW_INLINE_KEY=1 for non-production demos). "
+          + "Refusing to accept a self-signed receipt for an L402 payment.",
+      });
+    }
+
     const { [RECEIPT_ARG]: receipt, [RECEIPT_AMOUNT_ARG]: amount, ...toolArgs } = args;
 
     // Bind the receipt to BOTH the tool and the price ceiling it authorizes.
