@@ -1,0 +1,20 @@
+{
+  "@version": "EP-ACTION-RISK-MANIFEST-v0.1",
+  "service": {
+    "name": "bolthub-mcp-bridge",
+    "manifest_url": "/.well-known/agent-actions.json"
+  },
+  "actions": [
+    {
+      "id": "mcp.btc-intel_get_premium_report",
+      "description": "Pays a real Lightning (L402) invoice to fetch a premium report. Irreversible spend — requires a named human's authorization receipt.",
+      "match": { "protocol": "mcp", "tool": "btc-intel_get_premium_report" },
+      "action_type": "l402.pay",
+      "risk": "high",
+      "receipt_required": true,
+      "assurance_class": "class_a",
+      "max_age_sec": 900,
+      "max_amount_sats": 1000
+    }
+  ]
+}

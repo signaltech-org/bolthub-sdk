@@ -10,7 +10,7 @@
     },
     "packages/agent": {
       "name": "@bolthub/agent",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "devDependencies": {
         "@types/node": "^25.5.0",
         "macaroon": "^3.0.4",
@@ -36,6 +36,7 @@
       "dependencies": {
         "@bolthub/agent": "workspace:*",
         "@bolthub/shared": "workspace:*",
+        "@emilia-protocol/require-receipt": "^0.4.1",
         "@getalby/sdk": "^8.0.3",
       },
       "devDependencies": {
@@ -89,6 +90,8 @@
     "@bolthub/shared": ["@bolthub/shared@workspace:packages/shared"],
 
     "@bolthub/verify": ["@bolthub/verify@workspace:packages/verify"],
+
+    "@emilia-protocol/require-receipt": ["@emilia-protocol/require-receipt@0.4.1", "", {}, "sha512-dijihx6xEYA8umi9XSr1S8hiSsZeN9FkAb1HdTJEA+2tSgT/e7VBSb9tde519TNMyjFjIv20rzXeEiUjDWAuRQ=="],
 
     "@getalby/lightning-tools": ["@getalby/lightning-tools@8.1.1", "", {}, "sha512-gB+3fvTGz9bbl31JNgKMWqG4dZWgCxSB51fYn+F4tZ3x2h5oI/yHjvb6W9GBo2Zscr5gMP64gs0LlzKYoETlvQ=="],
 
