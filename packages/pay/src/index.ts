@@ -21,6 +21,12 @@ export type {
   X402PaymentPayload,
 } from "./rails/x402";
 
+export { x402Facilitator } from "./x402/facilitator-client";
+export type { X402FacilitatorOptions } from "./x402/facilitator-client";
+
+export { eip3009Signer } from "./x402/signer";
+export type { Eip3009SignerOptions, Eip712Account } from "./x402/signer";
+
 export { facilitatorRail, httpFacilitator } from "./rails/facilitator";
 export type {
   FacilitatorRailOptions,

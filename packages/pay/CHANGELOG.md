@@ -4,6 +4,32 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-07-02
+
+### Added
+
+- **Concrete x402 adapters** — the two halves that were injected interfaces in
+  0.1.0 now ship in the package, still with zero on-chain dependencies:
+  - `x402Facilitator({ url, headers?, authHeaders? })`: a `FacilitatorClient`
+    speaking the standard x402 facilitator HTTP API (`/verify`, `/settle`).
+    Works with the reference `x402.org/facilitator` (Base Sepolia), Coinbase
+    CDP (pass auth headers), or a self-hosted facilitator. Transport failures
+    degrade to invalid/failed results instead of throwing.
+  - `eip3009Signer({ account })`: an `X402Signer` that builds the EIP-3009
+    `TransferWithAuthorization` EIP-712 typed data and delegates signing to
+    any viem-`LocalAccount`-shaped account (`{ address, signTypedData }`).
+    Ships chain-id mappings for the common x402 networks plus a `chainIds`
+    override.
+- Wire-format verified live against `https://x402.org/facilitator`: a signed
+  payload round-trips verify with the payer address correctly recovered
+  (rejected only for the throwaway key's empty balance, as expected).
+
+### Known limitations
+
+- A live settle (funded testnet/mainnet USDC) has not been exercised yet.
+- x402 remains SDK-only: bolthub's hosted facilitator still settles Lightning
+  (L402) only.
+
 ## [0.1.0] - 2026-07-02
 
 First public release.

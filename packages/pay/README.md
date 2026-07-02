@@ -109,12 +109,12 @@ gets a `payment_required` challenge it pays an offer it has a *payer* for and
 retries — enforcing a per-asset budget.
 
 ```ts
-import { PayingClient, l402Payer, x402Payer } from "@bolthub/pay";
+import { PayingClient, l402Payer, x402Payer, eip3009Signer } from "@bolthub/pay";
 
 const client = new PayingClient({
   payers: [
-    l402Payer({ wallet: myLightningWallet }), // pays L402 invoices
-    x402Payer({ signer: myUsdcSigner }),      // signs x402 payments
+    l402Payer({ wallet: myLightningWallet }),                    // pays L402 invoices
+    x402Payer({ signer: eip3009Signer({ account: myAccount }) }), // signs x402 transfers
   ],
   maxTotal: { sat: 10_000, usdc: 5_000 },     // per-asset budget
   onPaid: (i) => console.log(`paid ${i.amount} ${i.asset} via ${i.scheme}`),
@@ -140,12 +140,17 @@ Price a tool in more than one asset and it offers both rails — the buyer pays 
 whichever they hold:
 
 ```ts
-import { createPaywall, l402Rail, x402Rail } from "@bolthub/pay";
+import { createPaywall, l402Rail, x402Rail, x402Facilitator } from "@bolthub/pay";
 
 const pay = createPaywall({
   rails: [
     l402Rail({ secret, invoiceProvider }),
-    x402Rail({ network: "base", asset: USDC_ADDRESS, payTo, facilitator }),
+    x402Rail({
+      network: "base",
+      asset: USDC_ADDRESS,
+      payTo,
+      facilitator: x402Facilitator({ url: "https://x402.org/facilitator" }),
+    }),
   ],
 });
 
@@ -156,8 +161,12 @@ pay.tool(server, "get_satellite_image", "Recent imagery", schema,
 ```
 
 The x402 rail follows the [x402](https://www.x402.org/) model: it advertises
-payment requirements and delegates verify/settle to a **facilitator**
-(Coinbase-hosted or self-hosted) you inject — no on-chain crypto dependency.
+payment requirements and delegates verify/settle to a **facilitator**.
+`x402Facilitator` speaks the standard facilitator HTTP API (the reference
+`x402.org` facilitator, Coinbase CDP via auth headers, or self-hosted), and
+`eip3009Signer` signs buyer authorizations through any viem-shaped account.
+Both are structural adapters: the package still has no on-chain crypto
+dependency.
 
 ## Adding a rail
 
