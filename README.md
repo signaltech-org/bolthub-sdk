@@ -2,10 +2,11 @@
 
 Source code for every publicly published [bolthub.ai](https://bolthub.ai) package — the npm `@bolthub/*` scope and the `bolthub` / `bolthub-verify` PyPI packages.
 
-bolthub is an API marketplace where AI agents discover and pay for HTTP APIs per-call over Lightning (L402). These packages are the client side of that: payment clients, MCP servers, a CLI, and origin-verification middleware.
+bolthub is a payment layer for agent-to-tool commerce: charge agents for your MCP tools and APIs per call, settling on the rail you choose (Lightning today, stablecoins next), with bolthub never in the funds path. These packages are the open-source side of that: the tool-payment SDK, payment clients, MCP servers, a CLI, and origin-verification middleware.
 
 | Package | Registry | Directory | What it is |
 | --- | --- | --- | --- |
+| [`@bolthub/pay`](https://www.npmjs.com/package/@bolthub/pay) | npm | `packages/pay` | Tool-payment SDK — price an MCP tool or HTTP endpoint (`createPaywall`), pay for tools within a budget (`PayingClient`); rails: L402, x402, facilitator |
 | [`@bolthub/agent`](https://www.npmjs.com/package/@bolthub/agent) | npm | `packages/agent` | L402 payment client — wallet adapters (LND, LNbits, Phoenixd, NWC, WebLN), 402 challenge handling, session cache |
 | [`@bolthub/mcp-registry`](https://www.npmjs.com/package/@bolthub/mcp-registry) | npm | `packages/mcp-registry` | MCP server exposing the whole bolthub marketplace to AI agents |
 | [`@bolthub/mcp-bridge`](https://www.npmjs.com/package/@bolthub/mcp-bridge) | npm | `packages/mcp-bridge` | MCP server for a single bolthub gateway (one tool per endpoint) |

@@ -1,6 +1,6 @@
 # @bolthub/cli
 
-CLI for the BoltHub L402 API marketplace. Search, explore, and call paid APIs from the terminal.
+CLI for the bolthub tool directory. Search, explore, and call paid APIs from the terminal.
 
 ## Install
 

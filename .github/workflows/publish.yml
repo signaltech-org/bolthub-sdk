@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: "Packages to publish (comma-separated: agent,mcp-bridge,mcp-registry,verify,cli,python,verify-python)"
+        description: "Packages to publish (comma-separated: agent,mcp-bridge,mcp-registry,verify,cli,pay,python,verify-python)"
         required: false
-        default: "agent,mcp-bridge,mcp-registry,verify,cli,python,verify-python"
+        default: "agent,mcp-bridge,mcp-registry,verify,cli,pay,python,verify-python"
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -44,6 +44,9 @@ jobs:
           - key: cli
             pkg: "@bolthub/cli"
             dir: packages/cli
+          - key: pay
+            pkg: "@bolthub/pay"
+            dir: packages/pay
     steps:
       - uses: actions/checkout@v6
 

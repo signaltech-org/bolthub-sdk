@@ -1,6 +1,6 @@
 # @bolthub/mcp-registry
 
-MCP server that gives AI agents access to **every API** on the bolthub marketplace. One config entry, every API, forever. New APIs are instantly available, with no config changes needed.
+MCP server that gives AI agents access to **every listed tool** in the bolthub tool directory. One config entry, every tool, forever. New tools are instantly available, with no config changes needed.
 
 Source: [signaltech-org/bolthub-sdk](https://github.com/signaltech-org/bolthub-sdk) · Docs: [docs.bolthub.ai](https://docs.bolthub.ai/docs/sdks/mcp-registry)
 
@@ -35,7 +35,7 @@ Add to your MCP client config (Cursor, Claude Desktop, OpenClaw, etc.):
 }
 ```
 
-That's it. Every API on bolthub.ai is now available to your agent.
+That's it. Every listed tool on bolthub.ai is now available to your agent.
 
 ### Environment Variables
 
@@ -85,7 +85,7 @@ The registry exposes four tools to your AI agent:
 
 ### `search_apis`
 
-Search the bolthub marketplace for APIs by keyword or tag.
+Search the bolthub tool directory for APIs by keyword or tag.
 
 ```
 search_apis({ query: "weather" })
@@ -130,7 +130,7 @@ call_api({ slug: "my-api", path: "/analyze", method: "POST", body: { text: "hell
 
 | | Registry (`mcp-registry`) | Bridge (`mcp-bridge`) |
 |---|---|---|
-| Config | One entry, every API | One entry per API |
+| Config | One entry, every tool | One entry per API |
 | New APIs | Instant | Requires config change |
 | Tool count | 4 (fixed) | N (one per endpoint) |
 | Best for | General-purpose agents | Dedicated single-API agents |
@@ -142,7 +142,7 @@ Use the registry for most cases. Use the bridge when you want direct, named tool
 This package handles your Lightning wallet credentials, so here is exactly what it does with them:
 
 - **Your credentials never reach bolthub.** Wallet secrets (`LND_MACAROON`, `NWC_URI`, `LNBITS_ADMIN_KEY`, `PHOENIXD_PASSWORD`) are read from env vars and passed only to the matching wallet adapter, which talks to the wallet *you* configured. They are never sent to bolthub servers, never persisted, and never logged.
-- **Endpoints contacted**: `https://api.bolthub.ai` (marketplace directory), `https://<slug>.gw.bolthub.ai` (the API you call), and your configured wallet. Nothing else — no telemetry or analytics.
+- **Endpoints contacted**: `https://api.bolthub.ai` (tool directory), `https://<slug>.gw.bolthub.ai` (the API you call), and your configured wallet. Nothing else — no telemetry or analytics.
 - **Local state**: paid L402 session tokens (not credentials) are cached in `~/.bolthub/sessions.json` with `0600` permissions, so an already-paid session is reused instead of paying again.
 - **Spend control**: `BUDGET_SATS` caps spending per server process (restarting your MCP client starts a fresh session and resets the cap). Use a pay-scoped macaroon or a small dedicated wallet for defense in depth.
 - **Auditable source & provenance**: the full source lives at [signaltech-org/bolthub-sdk](https://github.com/signaltech-org/bolthub-sdk) (`packages/mcp-registry`). The published `dist/index.js` is bundled from it with Bun, has zero runtime npm dependencies, and ships a source map with embedded sources. Releases are published from that repo's CI with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) — verify with `npm audit signatures`.

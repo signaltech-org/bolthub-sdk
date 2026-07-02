@@ -10,7 +10,7 @@
     },
     "packages/agent": {
       "name": "@bolthub/agent",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "devDependencies": {
         "@types/node": "^25.5.0",
         "macaroon": "^3.0.4",
@@ -58,6 +58,15 @@
         "zod": "^3",
       },
     },
+    "packages/pay": {
+      "name": "@bolthub/pay",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@modelcontextprotocol/sdk": "^1.27.1",
+        "@types/node": "^25.5.0",
+        "zod": "^3",
+      },
+    },
     "packages/shared": {
       "name": "@bolthub/shared",
       "version": "0.0.1",
@@ -85,6 +94,8 @@
     "@bolthub/mcp-bridge": ["@bolthub/mcp-bridge@workspace:packages/mcp-bridge"],
 
     "@bolthub/mcp-registry": ["@bolthub/mcp-registry@workspace:packages/mcp-registry"],
+
+    "@bolthub/pay": ["@bolthub/pay@workspace:packages/pay"],
 
     "@bolthub/shared": ["@bolthub/shared@workspace:packages/shared"],
 
