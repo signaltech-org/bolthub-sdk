@@ -1,7 +1,7 @@
 {
   "name": "@bolthub/pay",
-  "version": "0.2.0",
-  "description": "Charge for an MCP tool or HTTP endpoint in a few lines — rail-agnostic (L402 today, x402 next) payments for AI-agent tool calls",
+  "version": "0.3.0",
+  "description": "Charge for an MCP tool or HTTP endpoint in a few lines. Lightning-only (L402) micropayments for AI-agent tool calls",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -18,12 +18,10 @@
     "build": "rm -rf dist tsconfig.build.tsbuildinfo && bun build src/index.ts --outdir dist --target node --format esm --sourcemap=inline && cp dist/index.js dist/index.mjs && bun build src/index.ts --outdir dist --target node --format cjs --sourcemap=inline && bun x tsc --emitDeclarationOnly --outDir dist --declaration --project tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "demo": "bun run examples/two-rails-demo.ts"
+    "test": "bun test"
   },
   "keywords": [
     "l402",
-    "x402",
     "lightning",
     "bitcoin",
     "mcp",

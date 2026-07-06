@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createPaywall, PAYMENT_META_KEY } from "../paywall";
 import { l402Rail } from "../rails/l402";
-import { x402Rail } from "../rails/x402";
-import type { FacilitatorClient, X402PaymentPayload, X402Requirements } from "../rails/x402";
 import { randomPreimage, sha256Hex, verifyL402Token } from "../token";
 import type { InvoiceProvider, PaymentChallenge, ToolExtra } from "../types";
 
@@ -108,9 +106,9 @@ describe("paywall (L402 rail)", () => {
     const pay = createPaywall({ rails: [l402Rail({ secret: SECRET, invoiceProvider: invoices })] });
     const handler = pay({ price: { amount: 2000 }, resource: "get_image" }, async () => ({ content: [{ type: "text", text: "X" }] }));
 
-    const result = await handler({}, { _meta: { [PAYMENT_META_KEY]: { scheme: "x402", proof: "0xdeadbeef" } } });
+    const result = await handler({}, { _meta: { [PAYMENT_META_KEY]: { scheme: "bogus", proof: "0xdeadbeef" } } });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('Unsupported payment scheme "x402"');
+    expect(result.content[0].text).toContain('Unsupported payment scheme "bogus"');
   });
 
   test("the .tool registrar defaults resource to the tool name", async () => {
@@ -144,56 +142,21 @@ describe("paywall (L402 rail)", () => {
       rails: ["l402"],
     });
   });
-});
 
-describe("paywall (two rails, one tool)", () => {
-  class ApproveFacilitator implements FacilitatorClient {
-    async verify(_p: X402PaymentPayload, _r: X402Requirements) {
-      return { isValid: true, payer: "0xPayer" };
-    }
-    async settle(_p: X402PaymentPayload, _r: X402Requirements) {
-      return { success: true, txHash: "0xtx" };
-    }
-  }
-  const xPayment = () =>
-    Buffer.from(JSON.stringify({ x402Version: 1, scheme: "exact", network: "base-sepolia", payload: {} })).toString("base64");
-
-  function dualPaywall(onPaid?: (scheme: string) => void) {
+  test("a tool priced in multiple assets offers one L402 offer per settleable price", async () => {
     const invoices = new MockInvoices();
-    const pay = createPaywall({
-      rails: [
-        l402Rail({ secret: SECRET, invoiceProvider: invoices }),
-        x402Rail({ network: "base-sepolia", asset: "0xUSDC", payTo: "0xTo", facilitator: new ApproveFacilitator() }),
-      ],
-      onPaid: onPaid ? (info) => onPaid(info.scheme) : undefined,
-    });
+    const pay = createPaywall({ rails: [l402Rail({ secret: SECRET, invoiceProvider: invoices })] });
     const handler = pay(
-      { price: [{ amount: 2000, asset: "sat" }, { amount: 5000, asset: "usdc" }], resource: "dual" },
-      async () => ({ content: [{ type: "text", text: "DUAL DATA" }] }),
+      { price: [{ amount: 2000, asset: "sat" }, { amount: 5000, asset: "usd" }], resource: "multi" },
+      async () => ({ content: [{ type: "text", text: "MULTI DATA" }] }),
     );
-    return { invoices, handler };
-  }
 
-  test("a single challenge offers both rails, each with its own asset price", async () => {
-    const challenge = challengeOf(await dualPaywall().handler({}));
-    expect(challenge.offers.map((o) => o.scheme).sort()).toEqual(["l402", "x402"]);
-    expect(challenge.offers.find((o) => o.scheme === "l402")!.amount).toBe(2000);
-    expect(challenge.offers.find((o) => o.scheme === "x402")!.amount).toBe(5000);
-  });
+    const challenge = challengeOf(await handler({}));
+    // The L402 rail settles only sats, so the usd price is simply not offered.
+    expect(challenge.offers.map((o) => o.scheme)).toEqual(["l402"]);
+    expect(challenge.offers[0].amount).toBe(2000);
 
-  test("paying in sats (l402) unlocks the tool", async () => {
-    const paid: string[] = [];
-    const { invoices, handler } = dualPaywall((s) => paid.push(s));
-    const result = await handler({}, payChallenge(challengeOf(await handler({})), invoices));
-    expect(result.content[0].text).toBe("DUAL DATA");
-    expect(paid).toEqual(["l402"]);
-  });
-
-  test("paying in usdc (x402) unlocks the same tool — one flag, different rail", async () => {
-    const paid: string[] = [];
-    const { handler } = dualPaywall((s) => paid.push(s));
-    const result = await handler({}, { _meta: { [PAYMENT_META_KEY]: { scheme: "x402", proof: xPayment() } } });
-    expect(result.content[0].text).toBe("DUAL DATA");
-    expect(paid).toEqual(["x402"]);
+    const result = await handler({}, payChallenge(challenge, invoices));
+    expect(result.content[0].text).toBe("MULTI DATA");
   });
 });

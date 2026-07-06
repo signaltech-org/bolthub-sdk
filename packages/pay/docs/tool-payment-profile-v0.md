@@ -11,16 +11,15 @@
 TPP is a thin, **rail-agnostic** convention with two jobs:
 
 1. Let a tool **advertise a price** so an agent can reason about cost *before* it calls.
-2. Carry a **payment challenge** and a **payment proof** across two transports —
-   HTTP and MCP — using one envelope, regardless of which settlement rail
-   (L402/Lightning today, x402/stablecoin next) actually moves the money.
+2. Carry a **payment challenge** and a **payment proof** across two transports,
+   HTTP and MCP, using one envelope. The settlement rail (L402/Lightning) moves
+   the money.
 
-It is **not** a new settlement protocol. Money moves over existing rails. TPP
+It is **not** a new settlement protocol. Money moves over an existing rail. TPP
 standardises only the *discovery field* and the *envelope*; the rail-specific
-bytes are defined by [L402/LSAT](https://github.com/lightninglabs/L402) and
-[x402](https://www.x402.org/). The novel surface is deliberately tiny so TPP can
-sit *on top of* the rails the market is consolidating on rather than competing
-with them.
+bytes are defined by [L402/LSAT](https://github.com/lightninglabs/L402). The
+novel surface is deliberately tiny so TPP can sit *on top of* Lightning rather
+than competing with it.
 
 The reference implementation is [`@bolthub/pay`](https://www.npmjs.com/package/@bolthub/pay)
 (seller side). The L402 rail is wire-compatible with the bolthub hosted
@@ -31,8 +30,8 @@ gateway.
 | Term | Meaning |
 |---|---|
 | **Resource** | The thing being paid for — an MCP tool or an HTTP endpoint. Identified by a stable string, e.g. `get_satellite_image`. |
-| **Rail** | A settlement mechanism with a `scheme` id (`l402`, `x402`). |
-| **Offer** | One rail's concrete instructions to pay a price (an L402 invoice + token; an x402 transfer authorization). |
+| **Rail** | A settlement mechanism with a `scheme` id (`l402`). |
+| **Offer** | One rail's concrete instructions to pay a price (an L402 invoice + token). |
 | **Challenge** | "Payment required" + one or more Offers. |
 | **Proof** | Opaque, rail-scoped evidence of payment the seller can verify. |
 
@@ -47,12 +46,12 @@ Lets an agent budget before calling. Carries no commitment.
   "version": "0.1",
   "price": { "amount": 2000, "asset": "sat" },
   "model": "per_call",
-  "rails": ["l402", "x402"]
+  "rails": ["l402"]
 }
 ```
 
-- `amount` — integer, in the asset's **smallest unit** (sats; or a token's base units).
-- `asset` — `"sat"` or an asset id (e.g. `"usdc"`).
+- `amount` — integer, in the asset's **smallest unit** (sats).
+- `asset` — `"sat"`.
 - `model` — `per_call` | `per_kb` | `prepaid`. v0 normative value: `per_call`.
 - `rails` — schemes the seller will accept.
 
@@ -74,7 +73,7 @@ Returned when a call arrives without a valid proof. Carries the exact amount and
 
 `expiresAt` is Unix milliseconds and bounds the earliest offer expiry.
 
-**Offer — L402** (reference rail):
+**Offer — L402**:
 
 ```jsonc
 {
@@ -88,21 +87,6 @@ Returned when a call arrives without a valid proof. Carries the exact amount and
 }
 ```
 
-**Offer — x402** (non-normative sketch; finalised with the x402 adapter — the
-envelope already accommodates it):
-
-```jsonc
-{
-  "scheme": "x402",
-  "amount": "5000",
-  "asset": "usdc",
-  "network": "base",
-  "payTo": "0x...",
-  "nonce": "0x...",
-  "expiresAt": 1751400000000
-}
-```
-
 ### 3 · Payment proof
 
 The buyer pays an Offer, then re-issues the **same call** with:
@@ -113,8 +97,7 @@ The buyer pays an Offer, then re-issues the **same call** with:
 
 `proof` is rail-defined and opaque to TPP. For **L402** it is exactly the value
 that follows `L402 ` in the HTTP `Authorization` header (`<token>:<preimage>`).
-For **x402** it is the settlement payload. A seller MUST verify that
-`proof.scheme` is a rail it actually offered.
+A seller MUST verify that `proof.scheme` is a rail it actually offered.
 
 ## Transports
 
@@ -176,7 +159,6 @@ ignore unknown fields.
 
 ## Out of scope for v0 (tracked, not forgotten)
 
-- x402 Offer/Proof byte layout — defined when the x402 adapter lands.
 - prepaid/metered session accounting — the gateway has `X-Session-Token`; TPP
   will fold it into the envelope in a later revision.
 - discovery / registry format — emerges from payment data, not specified here.

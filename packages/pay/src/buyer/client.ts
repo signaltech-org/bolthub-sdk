@@ -1,14 +1,17 @@
 /**
- * The buyer client: call a paid tool and settle the payment transparently.
+ * The buyer client: call any tool safely, and settle payment transparently
+ * when one is required.
  *
- * `PayingClient` calls a tool; if the result is a `payment_required` challenge,
- * it picks an offer it has a {@link PaymentPayer} for, checks the budget, pays,
- * and retries the call with the proof in `_meta["ai.bolthub/payment"]`. It is
- * the symmetric counterpart of the seller-side `paywall()`.
+ * `ToolClient` calls a tool; free tools pass through untouched. If the result
+ * is a `payment_required` challenge, it picks an offer it has a
+ * {@link PaymentPayer} for, checks the budget, pays, and retries the call with
+ * the proof in `_meta["ai.bolthub/payment"]`. It is the symmetric counterpart
+ * of the seller-side `paywall()`. (Known as `PayingClient` before 0.3.0; the
+ * old name remains as a deprecated alias.)
  *
- * Budget is per asset (sats and USDC aren't comparable): `maxTotal.sat`,
- * `maxPerCall.usdc`, etc. The reservation is taken synchronously before the pay
- * await, so concurrent calls can't both pass the check and overspend.
+ * Budget is per asset: `maxTotal.sat`, `maxPerCall.sat`, etc. The reservation is
+ * taken synchronously before the pay await, so concurrent calls can't both pass
+ * the check and overspend.
  */
 
 import { PAYMENT_META_KEY } from "../paywall";
@@ -16,10 +19,10 @@ import type { Offer, PaymentChallenge, PaymentPayer, ToolResult } from "../types
 
 export type PayStage = "calling" | "paying" | "retrying";
 
-export interface PayingClientOptions {
+export interface ToolClientOptions {
   /** Payers in preference order. The first that matches an offer and fits the budget wins. */
   payers: PaymentPayer[];
-  /** Per-asset lifetime spend ceiling, e.g. `{ sat: 10_000, usdc: 5_000 }`. Unset asset = unlimited. */
+  /** Per-asset lifetime spend ceiling, e.g. `{ sat: 10_000 }`. Unset asset = unlimited. */
   maxTotal?: Partial<Record<string, number>>;
   /** Per-asset per-call ceiling. Unset asset = unlimited. */
   maxPerCall?: Partial<Record<string, number>>;
@@ -64,11 +67,11 @@ export function getPaymentChallenge(result: ToolResult): PaymentChallenge | unde
   return undefined;
 }
 
-export class PayingClient {
+export class ToolClient {
   private readonly payers: PaymentPayer[];
   private readonly spent: Record<string, number> = {};
 
-  constructor(private readonly options: PayingClientOptions) {
+  constructor(private readonly options: ToolClientOptions) {
     if (!options.payers || options.payers.length === 0) {
       throw new Error("PayingClient: at least one payer is required");
     }
@@ -177,3 +180,10 @@ export class PayingClient {
     this.spent[asset] = this.spentFor(asset) - Number(offer.amount);
   }
 }
+
+/** @deprecated Renamed to {@link ToolClient} in 0.3.0; this alias will be removed in 1.0. */
+export const PayingClient = ToolClient;
+/** @deprecated Renamed to {@link ToolClient} in 0.3.0. */
+export type PayingClient = ToolClient;
+/** @deprecated Renamed to {@link ToolClientOptions} in 0.3.0. */
+export type PayingClientOptions = ToolClientOptions;

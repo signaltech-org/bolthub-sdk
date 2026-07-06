@@ -2,13 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { PayingClient, PaymentBudgetError, getPaymentChallenge } from "../buyer/client";
 import { createPaywall } from "../paywall";
 import { l402Payer } from "../payers/l402";
-import { x402Payer } from "../payers/x402";
 import { l402Rail } from "../rails/l402";
-import { x402Rail } from "../rails/x402";
-import type { FacilitatorClient, X402PaymentPayload, X402Requirements } from "../rails/x402";
 import { randomPreimage, sha256Hex } from "../token";
-import type { InvoiceProvider, ToolHandler, ToolResult } from "../types";
-import type { X402Signer } from "../payers/x402";
+import type { InvoiceProvider, Offer, PaymentRail, Price, ResourceRef, ToolHandler, ToolResult } from "../types";
 
 const SECRET = "test-secret-at-least-thirty-two-bytes-long!!";
 
@@ -52,22 +48,16 @@ class MockLightning {
   };
 }
 
-class ApproveFacilitator implements FacilitatorClient {
-  async verify(_p: X402PaymentPayload, _r: X402Requirements) {
-    return { isValid: true, payer: "0xPayer" };
-  }
-  async settle(_p: X402PaymentPayload, _r: X402Requirements) {
-    return { success: true, txHash: "0xtx" };
-  }
-}
-
-const mockSigner: X402Signer = {
-  authorize: async (req) => ({
-    x402Version: 1,
-    scheme: "exact",
-    network: req.network,
-    payload: { signature: "0xsig", value: req.maxAmountRequired },
-  }),
+/** A rail with a scheme no configured payer settles, to exercise the "no payer" path. */
+const unpayableRail: PaymentRail = {
+  scheme: "mock",
+  assets: ["sat"],
+  async createOffer(price: Required<Price>, _resource: ResourceRef): Promise<Offer> {
+    return { scheme: "mock", amount: price.amount, asset: price.asset };
+  },
+  async verify() {
+    return { ok: true };
+  },
 };
 
 function paidText(result: ToolResult): string {
@@ -92,50 +82,6 @@ describe("PayingClient end-to-end (seller paywall ↔ buyer client)", () => {
     expect(buyer.remainingFor("sat")).toBe(8000);
   });
 
-  test("x402: an unpaid call is challenged, signed, and unlocked", async () => {
-    const mcp = new FakeMcp();
-    const pay = createPaywall({
-      rails: [x402Rail({ network: "base-sepolia", asset: "0xUSDC", payTo: "0xTo", facilitator: new ApproveFacilitator() })],
-    });
-    pay.tool(mcp, "premium", "Premium data", {}, { price: { amount: 5000, asset: "usdc" } }, async () => ({
-      content: [{ type: "text", text: "PAID CONTENT" }],
-    }));
-
-    const buyer = new PayingClient({ payers: [x402Payer({ signer: mockSigner })], maxTotal: { usdc: 10_000 } });
-    const result = await buyer.callTool(mcp, "premium");
-
-    expect(paidText(result)).toBe("PAID CONTENT");
-    expect(buyer.spentFor("usdc")).toBe(5000);
-  });
-
-  test("one tool, two rails: buyer preference decides which rail settles", async () => {
-    const ln = new MockLightning();
-    const makeMcp = () => {
-      const mcp = new FakeMcp();
-      const pay = createPaywall({
-        rails: [
-          l402Rail({ secret: SECRET, invoiceProvider: ln.invoiceProvider }),
-          x402Rail({ network: "base-sepolia", asset: "0xUSDC", payTo: "0xTo", facilitator: new ApproveFacilitator() }),
-        ],
-      });
-      pay.tool(mcp, "dual", "Dual-rail", {}, { price: [{ amount: 2000, asset: "sat" }, { amount: 5000, asset: "usdc" }] }, async () => ({
-        content: [{ type: "text", text: "DUAL" }],
-      }));
-      return mcp;
-    };
-
-    // Prefer x402 (listed first) → pays usdc.
-    const preferX402 = new PayingClient({ payers: [x402Payer({ signer: mockSigner }), l402Payer({ wallet: ln.wallet })] });
-    expect(paidText(await preferX402.callTool(makeMcp(), "dual"))).toBe("DUAL");
-    expect(preferX402.spentFor("usdc")).toBe(5000);
-    expect(preferX402.spentFor("sat")).toBe(0);
-
-    // Only an L402 payer → pays sats.
-    const onlyL402 = new PayingClient({ payers: [l402Payer({ wallet: ln.wallet })] });
-    expect(paidText(await onlyL402.callTool(makeMcp(), "dual"))).toBe("DUAL");
-    expect(onlyL402.spentFor("sat")).toBe(2000);
-  });
-
   test("a per-call cap below the price refuses to pay (nothing spent)", async () => {
     const ln = new MockLightning();
     const mcp = new FakeMcp();
@@ -149,17 +95,15 @@ describe("PayingClient end-to-end (seller paywall ↔ buyer client)", () => {
 
   test("no payer for the offered rail returns the unpaid challenge", async () => {
     const mcp = new FakeMcp();
-    const pay = createPaywall({
-      rails: [x402Rail({ network: "base-sepolia", asset: "0xUSDC", payTo: "0xTo", facilitator: new ApproveFacilitator() })],
-    });
-    pay.tool(mcp, "premium", "Premium", {}, { price: { amount: 5000, asset: "usdc" } }, async () => ({ content: [{ type: "text", text: "PAID" }] }));
+    const pay = createPaywall({ rails: [unpayableRail] });
+    pay.tool(mcp, "premium", "Premium", {}, { price: { amount: 2000 } }, async () => ({ content: [{ type: "text", text: "PAID" }] }));
 
-    // Buyer only holds an L402 payer; the tool only offers x402.
+    // Buyer only holds an L402 payer; the tool only offers the "mock" scheme.
     const buyer = new PayingClient({ payers: [l402Payer({ wallet: new MockLightning().wallet })] });
     const result = await buyer.callTool(mcp, "premium");
     expect(result.isError).toBe(true);
     expect(getPaymentChallenge(result)?.resource).toBe("premium");
-    expect(buyer.spentFor("usdc")).toBe(0);
+    expect(buyer.spentFor("sat")).toBe(0);
   });
 
   test("a free (unpaywalled) tool passes straight through", async () => {

@@ -50,13 +50,13 @@ export const TRIAL_DURATION_DAYS = 30;
 // free trial" reads naturally instead of "30-day free trial".
 export const TRIAL_DURATION_LABEL = "1-month";
 
-export const MONTHLY_BASE_FEE_SATS = 4_000;
+export const MONTHLY_BASE_FEE_SATS = 5_000;
 
 // 30-day rolling cycles. The previous 7-day cadence was too aggressive
 // for a launch audience — owners got an invoice every week and only 72
 // hours to pay. Stretching the cycle to 30 days and the grace window to
-// 7 days reduces friction without changing per-request economics
-// (monthly fee + tiers = exactly 4× the previous weekly equivalents).
+// 7 days reduces friction. The per-request tiers below are unchanged
+// from the weekly schedule; the monthly base fee is set for the cycle.
 export const BILLING_CYCLE_DAYS = 30;
 export const GRACE_PERIOD_HOURS = 7 * 24; // 7 days
 export const MAX_PAYMENT_RETRIES = 3;
@@ -84,8 +84,8 @@ export interface UsageTier {
  * the marketing pricing page.
  */
 export const MONTHLY_USAGE_TIERS: readonly UsageTier[] = [
-  { upTo: 400, rate: 0, label: "First 400 requests" },
-  { upTo: 50_000, rate: 2, label: "401 – 50,000" },
+  { upTo: 500, rate: 0, label: "First 500 requests" },
+  { upTo: 50_000, rate: 2, label: "501 – 50,000" },
   { upTo: 500_000, rate: 1, label: "50,001 – 500,000" },
   { upTo: Infinity, rate: 0.5, label: "500,001+" },
 ] as const;

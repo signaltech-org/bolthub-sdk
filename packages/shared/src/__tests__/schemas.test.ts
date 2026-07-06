@@ -5,6 +5,7 @@ import {
   billingCycleStatusEnum,
   billingStatusEnum,
   createPricingRuleSchema,
+  createEndpointSchema,
   pricingRuleSchema,
   sessionSchema,
   tenantSchema,
@@ -102,6 +103,41 @@ describe("createPricingRuleSchema", () => {
       priceSats: -10,
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("createEndpointSchema — gateway vs sdk_tool discriminator", () => {
+  test("defaults type to gateway", () => {
+    const result = createEndpointSchema.safeParse({ path: "/weather", originUrl: "https://api.example.com" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.type).toBe("gateway");
+  });
+
+  test("gateway path must start with /", () => {
+    const ok = createEndpointSchema.safeParse({ path: "/weather", originUrl: "https://api.example.com" });
+    const bad = createEndpointSchema.safeParse({ path: "weather", originUrl: "https://api.example.com" });
+    expect(ok.success).toBe(true);
+    expect(bad.success).toBe(false);
+    if (!bad.success) expect(bad.error.issues[0].message).toBe("Path must start with /");
+  });
+
+  test("sdk_tool accepts a resource name with no leading slash", () => {
+    const result = createEndpointSchema.safeParse({ type: "sdk_tool", path: "weather.forecast" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.path).toBe("weather.forecast");
+  });
+
+  test("sdk_tool rejects an origin (served from the seller's own server)", () => {
+    const withUrl = createEndpointSchema.safeParse({ type: "sdk_tool", path: "weather.forecast", originUrl: "https://api.example.com" });
+    const withId = createEndpointSchema.safeParse({ type: "sdk_tool", path: "weather.forecast", originId: "00000000-0000-0000-0000-000000000000" });
+    expect(withUrl.success).toBe(false);
+    expect(withId.success).toBe(false);
+  });
+
+  test("sdk_tool does not require a leading-slash path", () => {
+    // The gateway `/`-prefix rule must not fire for sdk_tool rows.
+    const result = createEndpointSchema.safeParse({ type: "sdk_tool", path: "get_quote" });
+    expect(result.success).toBe(true);
   });
 });
 

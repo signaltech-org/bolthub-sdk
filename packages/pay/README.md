@@ -1,8 +1,7 @@
 # @bolthub/pay
 
-Charge for an MCP tool (or HTTP endpoint) in a few lines. Rail-agnostic: ships
-the **L402 (Lightning)** rail today; **x402 (stablecoin)** drops in behind the
-same interface. Seller side of the [bolthub Tool Payment Profile](./docs/tool-payment-profile-v0.md).
+Charge for an MCP tool (or HTTP endpoint) in a few lines. Lightning-only: settles
+over the **L402** rail. Seller side of the [bolthub Tool Payment Profile](./docs/tool-payment-profile-v0.md).
 
 > **Status:** the package follows SemVer from `0.1.0`; the wire format it
 > speaks (TPP `0.1`) is a draft and may evolve before 1.0. Breaking wire
@@ -10,8 +9,8 @@ same interface. Seller side of the [bolthub Tool Payment Profile](./docs/tool-pa
 
 The agent↔tool protocol standardises *what a tool does* but has no slot for
 *what it costs*. `@bolthub/pay` fills that slot: a paid tool answers an unpaid
-call with a `payment_required` challenge, and runs only once a valid proof comes
-back — over whatever rail you accept.
+call with a `payment_required` challenge, and runs only once the buyer pays the
+Lightning invoice and returns a valid proof.
 
 ## Install
 
@@ -104,19 +103,17 @@ const ad = pay.advertise({ amount: 2000 }); // → { version, price, model, rail
 
 ## Buyer side: pay for tools automatically
 
-`PayingClient` is the seller wrapper's counterpart. It calls a tool, and if it
-gets a `payment_required` challenge it pays an offer it has a *payer* for and
-retries — enforcing a per-asset budget.
+`ToolClient` is the seller wrapper's counterpart. It calls a tool, and if it
+gets a `payment_required` challenge it pays the L402 offer and retries, staying
+within a budget you set. (Known as `PayingClient` before 0.3.0; that name
+remains as a deprecated alias.)
 
 ```ts
-import { PayingClient, l402Payer, x402Payer, eip3009Signer } from "@bolthub/pay";
+import { ToolClient, l402Payer } from "@bolthub/pay";
 
-const client = new PayingClient({
-  payers: [
-    l402Payer({ wallet: myLightningWallet }),                    // pays L402 invoices
-    x402Payer({ signer: eip3009Signer({ account: myAccount }) }), // signs x402 transfers
-  ],
-  maxTotal: { sat: 10_000, usdc: 5_000 },     // per-asset budget
+const client = new ToolClient({
+  payers: [l402Payer({ wallet: myLightningWallet })], // pays L402 invoices
+  maxTotal: { sat: 10_000 },                          // per-asset budget
   onPaid: (i) => console.log(`paid ${i.amount} ${i.asset} via ${i.scheme}`),
 });
 
@@ -124,55 +121,14 @@ const client = new PayingClient({
 const result = await client.callTool(mcpClient, "get_satellite_image", { lat, lon });
 ```
 
-Payers are tried in order, so the list is your rail preference. `l402Payer`'s
-wallet is structurally `@bolthub/agent`'s `WalletAdapter`, so existing wallets
-(NWC / LND / phoenixd) drop straight in.
-
-See the whole loop — one tool, both rails, no testnet needed:
-
-```bash
-bun run packages/pay/examples/two-rails-demo.ts
-```
-
-## Two rails, one tool
-
-Price a tool in more than one asset and it offers both rails — the buyer pays in
-whichever they hold:
-
-```ts
-import { createPaywall, l402Rail, x402Rail, x402Facilitator } from "@bolthub/pay";
-
-const pay = createPaywall({
-  rails: [
-    l402Rail({ secret, invoiceProvider }),
-    x402Rail({
-      network: "base",
-      asset: USDC_ADDRESS,
-      payTo,
-      facilitator: x402Facilitator({ url: "https://x402.org/facilitator" }),
-    }),
-  ],
-});
-
-pay.tool(server, "get_satellite_image", "Recent imagery", schema,
-  { price: [{ amount: 2000, asset: "sat" }, { amount: 5000, asset: "usdc" }] },
-  async (args) => ({ content: [{ type: "text", text: await fetchImage(args) }] }));
-// One challenge, two offers. Pay the Lightning invoice OR sign the USDC transfer.
-```
-
-The x402 rail follows the [x402](https://www.x402.org/) model: it advertises
-payment requirements and delegates verify/settle to a **facilitator**.
-`x402Facilitator` speaks the standard facilitator HTTP API (the reference
-`x402.org` facilitator, Coinbase CDP via auth headers, or self-hosted), and
-`eip3009Signer` signs buyer authorizations through any viem-shaped account.
-Both are structural adapters: the package still has no on-chain crypto
-dependency.
+`l402Payer`'s wallet is structurally `@bolthub/agent`'s `WalletAdapter`, so
+existing wallets (NWC / LND / phoenixd) drop straight in.
 
 ## Adding a rail
 
-Implement [`PaymentRail`](./src/types.ts) — `assets`, `createOffer(price,
-resource)`, and `verify(proof, ctx)` — and pass it in `rails`. The paywall core
-never sees rail-specific bytes, so a new rail (cards, another chain) is purely
+The paywall core is rail-agnostic. Implement [`PaymentRail`](./src/types.ts)
+(`assets`, `createOffer(price, resource)`, and `verify(proof, ctx)`) and pass it
+in `rails`. The core never sees rail-specific bytes, so a new rail is purely
 additive.
 
 ## Security

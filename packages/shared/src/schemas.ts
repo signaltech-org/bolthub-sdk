@@ -61,6 +61,9 @@ export const endpointSchema = z.object({
   originId: z.string().uuid().nullable().optional(),
   path: z.string().min(1),
   originUrl: z.string().url().nullable().optional(),
+  // Which hosted-platform mode the row is (DW tool model). Optional so rows read
+  // from a cache written before the field existed still parse; defaults gateway.
+  type: z.enum(["gateway", "sdk_tool"]).default("gateway"),
   method: z.string().default("GET"),
   title: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
@@ -161,28 +164,47 @@ export const createOriginSchema = z.object({
   description: z.string().max(1000).optional(),
 });
 
-export const createEndpointSchema = z.object({
-  path: z.string().min(1).regex(/^\//, { message: "Path must start with /" }),
-  originUrl: z.string().url().optional(),
-  originId: z.string().uuid().optional(),
-  // Listable methods are restricted to data (GET/HEAD) and computation (POST).
-  // Mutating verbs (PUT/PATCH/DELETE) don't fit anonymous pay-per-call — they
-  // mutate caller-owned state, which needs an identity L402 doesn't provide.
-  method: z.enum(["GET", "POST", "HEAD"]).default("GET"),
-  title: z.string().max(255).optional(),
-  description: z.string().max(1000).optional(),
-  docsUrl: z.string().url().max(1000).optional(),
-  exampleRequest: z.record(z.unknown()).optional(),
-  exampleResponse: z.record(z.unknown()).optional(),
-  parameters: z.array(endpointParameterSchema).optional(),
-  cacheTtlSeconds: z.number().int().positive().optional(),
-  rateLimitPerMinute: z.number().int().positive().optional(),
-  freeTryEnabled: z.boolean().optional(),
-  liveSampleEnabled: z.boolean().optional(),
-  streaming: z.boolean().optional(),
-  maxStreamSeconds: z.number().int().positive().optional(),
-  idleTimeoutSeconds: z.number().int().positive().optional(),
-});
+export const createEndpointSchema = z
+  .object({
+    // For gateway endpoints this is the HTTP route (must start with `/`); for
+    // sdk_tool endpoints it is the MCP resource name (no leading slash). The
+    // per-type rule is enforced in the superRefine below.
+    path: z.string().min(1),
+    originUrl: z.string().url().optional(),
+    originId: z.string().uuid().optional(),
+    // Which hosted-platform mode this row is. `gateway` (default) = an HTTP
+    // route proxied via an origin. `sdk_tool` = a tool the seller serves
+    // themselves, priced here and settled via the hosted facilitator.
+    type: z.enum(["gateway", "sdk_tool"]).default("gateway"),
+    // Listable methods are restricted to data (GET/HEAD) and computation (POST).
+    // Mutating verbs (PUT/PATCH/DELETE) don't fit anonymous pay-per-call — they
+    // mutate caller-owned state, which needs an identity L402 doesn't provide.
+    method: z.enum(["GET", "POST", "HEAD"]).default("GET"),
+    title: z.string().max(255).optional(),
+    description: z.string().max(1000).optional(),
+    docsUrl: z.string().url().max(1000).optional(),
+    exampleRequest: z.record(z.unknown()).optional(),
+    exampleResponse: z.record(z.unknown()).optional(),
+    parameters: z.array(endpointParameterSchema).optional(),
+    cacheTtlSeconds: z.number().int().positive().optional(),
+    rateLimitPerMinute: z.number().int().positive().optional(),
+    freeTryEnabled: z.boolean().optional(),
+    liveSampleEnabled: z.boolean().optional(),
+    streaming: z.boolean().optional(),
+    maxStreamSeconds: z.number().int().positive().optional(),
+    idleTimeoutSeconds: z.number().int().positive().optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.type === "sdk_tool") {
+      // sdk_tool is served from the seller's own server — no origin, no proxy.
+      if (val.originId || val.originUrl) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["originId"], message: "An SDK tool has no origin — it is served from your own server" });
+      }
+    } else if (!val.path.startsWith("/")) {
+      // gateway path rule, preserved from the original schema.
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["path"], message: "Path must start with /" });
+    }
+  });
 
 export const createPricingRuleSchema = z.object({
   pricingModel: pricingModelEnum,

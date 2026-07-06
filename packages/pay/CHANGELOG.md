@@ -4,6 +4,27 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-06
+
+### Removed
+
+- **BREAKING: removed the x402 (stablecoin) rail; `@bolthub/pay` is now
+  Lightning-only (L402).** Removed exports: `x402Rail`, `x402Payer`,
+  `x402Facilitator`, `eip3009Signer`, and the x402 types (`X402Rail`,
+  `X402RailOptions`, `FacilitatorClient`, `X402Requirements`,
+  `X402PaymentPayload`, `X402FacilitatorOptions`, `Eip3009SignerOptions`,
+  `Eip712Account`, `X402PayerOptions`, `X402Signer`). After evaluating x402's
+  on-chain settlement and gas costs for micropayments, we are standardising on
+  the Lightning Network. The `PaymentRail` interface stays rail-agnostic, so a
+  rail can still be added by implementing it.
+
+### Changed
+
+- **`PayingClient` is now `ToolClient`** (with `ToolClientOptions`). The old
+  names remain as deprecated aliases until 1.0. Rationale: the client's job is
+  calling tools safely — free tools pass through untouched; paying, within the
+  budget you set, is one property of that.
+
 ## [0.2.0] - 2026-07-02
 
 ### Added

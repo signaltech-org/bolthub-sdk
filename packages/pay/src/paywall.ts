@@ -11,11 +11,10 @@
  *   - a call carrying a valid proof in `extra._meta["ai.bolthub/payment"]` → the
  *     real handler runs.
  *
- * A tool can be priced in more than one asset (e.g. `[{2000 sat},{5000 usdc}]`);
- * each rail is matched to the price whose asset it settles, so one tool can
- * offer Lightning AND stablecoin and let the buyer choose. The wrapper is
- * rail-agnostic — it never touches invoices or signatures; each {@link PaymentRail}
- * mints and verifies its own. See `docs/specs/tool-payment-profile-v0.md`.
+ * A tool can be priced in more than one asset; each rail is matched to the price
+ * whose asset it settles. The wrapper is rail-agnostic: it never touches invoices
+ * or signatures; each {@link PaymentRail} mints and verifies its own. See
+ * `docs/specs/tool-payment-profile-v0.md`.
  */
 
 import type {
@@ -164,12 +163,11 @@ function normalisePrices(price: Price | Price[], defaultAsset: string): Required
  * @example
  * ```ts
  * const pay = createPaywall({
- *   rails: [l402Rail({ secret, invoiceProvider }), x402Rail({ network, asset, payTo, facilitator })],
+ *   rails: [l402Rail({ secret, invoiceProvider })],
  * });
  *
- * // One tool, two rails — the buyer pays in sats OR usdc:
  * pay.tool(server, "get_satellite_image", "Recent imagery", schema,
- *          { price: [{ amount: 2000, asset: "sat" }, { amount: 5000, asset: "usdc" }] },
+ *          { price: { amount: 2000, asset: "sat" } },
  *          async (args) => fetchImage(args));
  * ```
  */

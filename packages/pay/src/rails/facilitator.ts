@@ -8,9 +8,6 @@
  * runs on the hosted path — bolthub sits in the metering/control flow (replay
  * protection, usage analytics, discovery) but never in the funds path.
  *
- * Note: this "facilitator" is the bolthub hosted service, distinct from the
- * x402 `FacilitatorClient` (an on-chain verify/settle facilitator).
- *
  * See `docs/specs/facilitator-protocol-v0.md` and
  * `docs/transition/roles-and-topology.md`.
  */

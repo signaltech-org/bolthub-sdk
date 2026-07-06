@@ -80,17 +80,16 @@ export interface VerifyContext {
 }
 
 /**
- * A settlement rail. Implement this to add a rail (e.g. x402) without touching
- * the paywall core. The two halves are symmetric: {@link createOffer} mints the
- * challenge a buyer pays; {@link verify} checks the proof they return.
+ * A settlement rail. Implement this to add a rail without touching the paywall
+ * core. The two halves are symmetric: {@link createOffer} mints the challenge a
+ * buyer pays; {@link verify} checks the proof they return.
  */
 export interface PaymentRail {
-  /** Scheme id, e.g. `"l402"` or `"x402"`. Must match {@link PaymentProof.scheme}. */
+  /** Scheme id, e.g. `"l402"`. Must match {@link PaymentProof.scheme}. */
   readonly scheme: string;
   /**
-   * Assets this rail can settle, e.g. `["sat"]` or `["usdc"]`. The paywall uses
-   * this to match one of a tool's prices to a rail (so a tool can be priced
-   * `[2000 sat, 5000 usdc]` and offer both rails).
+   * Assets this rail can settle, e.g. `["sat"]`. The paywall uses this to match
+   * one of a tool's prices to a rail.
    */
   readonly assets: string[];
   /** Build a concrete {@link Offer} for `price`, bound to `resource`. */
@@ -102,8 +101,7 @@ export interface PaymentRail {
 /**
  * Buyer-side counterpart of {@link PaymentRail}: pays an {@link Offer} of one
  * scheme and returns the proof to present on retry. Payers take their own
- * injected dependency (a wallet for L402, a signer for x402), mirroring how
- * rails inject theirs.
+ * injected dependency (a wallet for L402), mirroring how rails inject theirs.
  */
 export interface PaymentPayer {
   /** Scheme id this payer settles, matching {@link Offer.scheme}. */
