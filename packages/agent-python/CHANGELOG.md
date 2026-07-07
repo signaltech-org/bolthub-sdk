@@ -4,6 +4,22 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-07-07
+
+### Added
+
+- **`L402Client` and `AsyncL402Client` can draw from a shared `Budget`** —
+  full parity with `@bolthub/pay` 0.4.0's cross-path pool. New constructor
+  kwargs: `budget=` (mutually exclusive with `budget_sats`; the budget's
+  `max_per_call["sat"]` also caps each request when `max_per_request_sats`
+  is unset) and `on_paid=` (fired after each successful payment with
+  `{"scheme", "amount", "asset", "resource"}`). Pass the same `Budget` to a
+  `ToolClient` and an `L402Client` and neither can spend past `max_total`,
+  even under concurrent calls.
+- **Per-request `max_cost_sats=` and `on_paid=`** on `request()`/`get()`/
+  `post()` of both clients: a one-off spend ceiling that tightens (never
+  loosens) the configured caps, and an exact per-call cost callback.
+
 ## [0.4.0] - 2026-07-07
 
 ### Added

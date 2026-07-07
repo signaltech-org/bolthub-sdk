@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import time
-from typing import Any
+from typing import Any, Callable, Optional
 
 import httpx
 
@@ -18,6 +18,7 @@ from ._engine import (
     update_session,
 )
 from .awallets import SyncWalletAdapter
+from .budget import Budget
 from .client import _SessionInfo
 from .session_store import InMemorySessionStore, SessionStore
 
@@ -58,15 +59,23 @@ class AsyncL402Client:
         session_store: SessionStore | None = None,
         on_unknown_amount: str = "cap",
         price_header: str | None = None,
+        budget: Budget | None = None,
+        on_paid: Optional[Callable[[dict], None]] = None,
     ):
+        if budget is not None and budget_sats is not None:
+            raise ValueError(
+                "AsyncL402Client: pass either an external `budget` or `budget_sats`, not both"
+            )
         self._wallet = _ensure_async_wallet(wallet)
         self._budget_tracker = BudgetTracker(
             max_per_request_sats=max_per_request_sats,
             budget_sats=budget_sats,
             on_unknown_amount=on_unknown_amount,
+            shared_budget=budget,
         )
         self._price_header = price_header
         self._timeout = timeout
+        self._on_paid = on_paid
         self._client = httpx.AsyncClient(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
 
@@ -99,8 +108,21 @@ class AsyncL402Client:
         """Convenience wrapper around :meth:`request` with ``method="POST"``."""
         return await self.request("POST", url, **kwargs)
 
-    async def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        """Send an HTTP request, automatically handling L402 challenges."""
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_cost_sats: int | None = None,
+        on_paid: Optional[Callable[[dict], None]] = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send an HTTP request, automatically handling L402 challenges.
+
+        ``max_cost_sats`` tightens (never loosens) the per-request ceiling for
+        this call only. ``on_paid`` fires in addition to the client-level
+        callback, letting callers attribute an exact cost to this call.
+        """
         skey = session_key(url)
         session = self._store.get(skey)
 
@@ -126,12 +148,19 @@ class AsyncL402Client:
         macaroon, invoice = challenge
         amount = self._extract_amount(resp, invoice)
 
-        charge = self._budget_tracker.reserve(amount)
+        charge = self._budget_tracker.reserve(amount, max_cost_sats=max_cost_sats)
         try:
             preimage = await self._wallet.pay_invoice(invoice)
         except BaseException:
             self._budget_tracker.rollback(charge)
             raise
+
+        if self._on_paid is not None or on_paid is not None:
+            info = {"scheme": "l402", "amount": charge, "asset": "sat", "resource": url}
+            if self._on_paid is not None:
+                self._on_paid(info)
+            if on_paid is not None:
+                on_paid(info)
 
         headers = dict(kwargs.get("headers", {}))
         headers["Authorization"] = f"L402 {macaroon}:{preimage}"

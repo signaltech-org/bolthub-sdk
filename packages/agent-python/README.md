@@ -248,9 +248,13 @@ buyer.spent_for("sat")             # 2000
 ```
 
 Pass one shared `Budget(max_total={"sat": 10_000})` as `budget=` to several
-clients to enforce a single spending pool across them. Budget violations raise
-`PaymentBudgetError`; failed payments roll the reservation back and raise
-`PaymentError`.
+clients to enforce a single spending pool across them — including the HTTP
+`L402Client`/`AsyncL402Client` (0.4.1+), so the MCP and HTTP-402 payment
+paths can never jointly overspend. Budget violations raise
+`PaymentBudgetError` (`L402BudgetError` on the HTTP clients); failed payments
+roll the reservation back. The HTTP clients also take a per-request
+`max_cost_sats=` ceiling and `on_paid=` callbacks (client-level and
+per-request) for exact cost attribution.
 
 Token primitives (`sign_l402_token`, `verify_l402_token`, `verify_preimage`,
 `sha256_hex`, `random_preimage`) are exported too, and produce byte-identical

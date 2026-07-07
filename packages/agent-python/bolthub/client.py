@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Optional
 
 import httpx
 
@@ -18,6 +18,7 @@ from ._engine import (
     session_key,
     update_session,
 )
+from .budget import Budget
 from .session_store import SessionStore, InMemorySessionStore
 from .wallets import WalletAdapter
 
@@ -64,6 +65,15 @@ class L402Client:
             nothing (legacy, unsafe).
         price_header: Optional response header name to read the price (in sats)
             from when the body and invoice do not carry it.
+        budget: An external :class:`bolthub.budget.Budget` to draw from instead
+            of ``budget_sats``. Share one instance with a
+            :class:`bolthub.tool_client.ToolClient` to enforce a single spending
+            pool across the HTTP-402 and MCP payment paths. The budget's
+            ``max_per_call["sat"]`` also caps each request when
+            ``max_per_request_sats`` is unset. Mutually exclusive with
+            ``budget_sats``.
+        on_paid: Called after each successful invoice payment with
+            ``{"scheme", "amount", "asset", "resource"}``.
     """
 
     def __init__(
@@ -76,15 +86,23 @@ class L402Client:
         session_store: SessionStore | None = None,
         on_unknown_amount: str = "cap",
         price_header: str | None = None,
+        budget: Budget | None = None,
+        on_paid: Optional[Callable[[dict], None]] = None,
     ):
+        if budget is not None and budget_sats is not None:
+            raise ValueError(
+                "L402Client: pass either an external `budget` or `budget_sats`, not both"
+            )
         self._wallet = wallet
         self._budget_tracker = BudgetTracker(
             max_per_request_sats=max_per_request_sats,
             budget_sats=budget_sats,
             on_unknown_amount=on_unknown_amount,
+            shared_budget=budget,
         )
         self._price_header = price_header
         self._timeout = timeout
+        self._on_paid = on_paid
         self._client = httpx.Client(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
 
@@ -117,8 +135,21 @@ class L402Client:
         """Convenience wrapper around :meth:`request` with ``method="POST"``."""
         return self.request("POST", url, **kwargs)
 
-    def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        """Send an HTTP request, automatically handling L402 challenges."""
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        max_cost_sats: int | None = None,
+        on_paid: Optional[Callable[[dict], None]] = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Send an HTTP request, automatically handling L402 challenges.
+
+        ``max_cost_sats`` tightens (never loosens) the per-request ceiling for
+        this call only. ``on_paid`` fires in addition to the client-level
+        callback, letting callers attribute an exact cost to this call.
+        """
         skey = session_key(url)
         session = self._store.get(skey)
 
@@ -147,12 +178,19 @@ class L402Client:
         # Reserve budget *before* paying; roll back if the payment fails so a
         # failed payment is never counted. Raises L402BudgetError on a limit or
         # the unknown-amount policy.
-        charge = self._budget_tracker.reserve(amount)
+        charge = self._budget_tracker.reserve(amount, max_cost_sats=max_cost_sats)
         try:
             preimage = self._wallet.pay_invoice(invoice)
         except Exception:
             self._budget_tracker.rollback(charge)
             raise
+
+        if self._on_paid is not None or on_paid is not None:
+            info = {"scheme": "l402", "amount": charge, "asset": "sat", "resource": url}
+            if self._on_paid is not None:
+                self._on_paid(info)
+            if on_paid is not None:
+                on_paid(info)
 
         headers = dict(kwargs.get("headers", {}))
         headers["Authorization"] = f"L402 {macaroon}:{preimage}"

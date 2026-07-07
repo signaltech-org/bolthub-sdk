@@ -8,6 +8,7 @@ callers pass in already-read response primitives.
 
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -16,6 +17,8 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from ._invoice import bolt11_amount_sats
+from .budget import Budget
+from .errors import PaymentBudgetError
 from .session_store import SessionData, SessionStore
 
 
@@ -150,62 +153,101 @@ class BudgetTracker:
         max_per_request_sats: int | None = None,
         budget_sats: int | None = None,
         on_unknown_amount: str = "cap",
+        shared_budget: Budget | None = None,
     ) -> None:
         if on_unknown_amount not in UNKNOWN_AMOUNT_POLICIES:
             raise ValueError(
                 f"on_unknown_amount must be one of {UNKNOWN_AMOUNT_POLICIES}, "
                 f"got {on_unknown_amount!r}"
             )
+        if shared_budget is not None and budget_sats is not None:
+            raise ValueError(
+                "pass either an external shared budget or budget_sats, not both"
+            )
         self._max_per_request = max_per_request_sats
         self._budget = budget_sats
         self._on_unknown = on_unknown_amount
+        self._shared = shared_budget
         self._spent = 0
         self._lock = threading.Lock()
 
     @property
     def total_spent(self) -> int:
+        """Sats spent so far. With a shared budget this reads the SHARED pool."""
+        if self._shared is not None:
+            return int(self._shared.spent_for("sat"))
         return self._spent
 
     @property
     def remaining_budget(self) -> int | None:
+        if self._shared is not None:
+            remaining = self._shared.remaining_for("sat")
+            return None if math.isinf(remaining) else int(remaining)
         if self._budget is None:
             return None
         return max(0, self._budget - self._spent)
 
-    def reserve(self, amount: int | None) -> int:
+    def _effective_cap(self, max_cost_sats: int | None) -> int | None:
+        """The per-request ceiling for one call: ``max_per_request_sats``,
+        tightened by the shared budget's ``max_per_call["sat"]`` and by the
+        caller's one-off ``max_cost_sats``. ``None`` = uncapped.
+        """
+        cap = math.inf if self._max_per_request is None else self._max_per_request
+        if self._shared is not None:
+            cap = min(cap, self._shared.per_call_for("sat"))
+        if max_cost_sats is not None:
+            cap = min(cap, max_cost_sats)
+        return None if math.isinf(cap) else int(cap)
+
+    def reserve(self, amount: int | None, *, max_cost_sats: int | None = None) -> int:
         """Validate and provisionally count an invoice's charge.
 
         ``amount`` is the resolved price in sats, or ``None`` if it could not be
-        determined. Returns the number of sats reserved (to pass back to
+        determined. ``max_cost_sats`` tightens the per-request ceiling for this
+        one call. Returns the number of sats reserved (to pass back to
         :meth:`rollback` on payment failure). Raises :class:`L402BudgetError`
         when a limit would be exceeded or the unknown-amount policy refuses.
 
-        The check and the reservation happen atomically under the lock, so
-        concurrent callers can never both pass a budget check and then overspend.
+        The check and the reservation happen atomically (under this tracker's
+        lock, or the shared :class:`Budget`'s), so concurrent callers can never
+        both pass a budget check and then overspend.
         """
+        cap = self._effective_cap(max_cost_sats)
+        if self._shared is not None:
+            charge = self._resolve_charge(amount, cap)
+            if charge > 0:
+                try:
+                    self._shared.reserve("sat", charge)
+                except PaymentBudgetError as exc:
+                    raise L402BudgetError(str(exc)) from exc
+            return charge
         with self._lock:
-            charge = self._resolve_charge(amount)
+            charge = self._resolve_charge(amount, cap)
             self._spent += charge
             return charge
 
     def rollback(self, charge: int) -> None:
         """Undo a prior :meth:`reserve` (e.g. when payment fails)."""
-        if charge:
-            with self._lock:
-                self._spent -= charge
+        if not charge:
+            return
+        if self._shared is not None:
+            self._shared.rollback("sat", charge)
+            return
+        with self._lock:
+            self._spent -= charge
 
-    def _resolve_charge(self, amount: int | None) -> int:
+    def _resolve_charge(self, amount: int | None, cap: int | None) -> int:
         if amount is None:
-            return self._resolve_unknown()
-        if self._max_per_request is not None and amount > self._max_per_request:
+            return self._resolve_unknown(cap)
+        if cap is not None and amount > cap:
             raise L402BudgetError(
                 f"Invoice amount {amount} sats exceeds per-request limit of "
-                f"{self._max_per_request} sats"
+                f"{cap} sats"
             )
         self._check_budget(amount)
         return amount
 
-    def _resolve_unknown(self) -> int:
+    def _resolve_unknown(self, cap: int | None) -> int:
         if self._on_unknown == "allow":
             return 0
         if self._on_unknown == "refuse":
@@ -213,17 +255,26 @@ class BudgetTracker:
                 "Invoice amount could not be determined; refusing to pay "
                 "(on_unknown_amount='refuse')"
             )
-        # "cap": pay only up to max_per_request_sats (counted against budget);
-        # refuse outright when no ceiling is configured.
-        if self._max_per_request is None:
+        # "cap": pay only up to the per-request ceiling (counted against the
+        # budget); refuse outright when no ceiling is configured.
+        if cap is None:
             raise L402BudgetError(
                 "Invoice amount could not be determined and no "
                 "max_per_request_sats is set; refusing to pay"
             )
-        self._check_budget(self._max_per_request)
-        return self._max_per_request
+        self._check_budget(cap)
+        return cap
 
     def _check_budget(self, charge: int) -> None:
+        if self._shared is not None:
+            denial = self._shared.check("sat", charge)
+            if denial:
+                raise L402BudgetError(
+                    f"Invoice amount {charge} sats {denial} "
+                    f"(spent: {int(self._shared.spent_for('sat'))}, "
+                    f"remaining: {self._shared.remaining_for('sat')})"
+                )
+            return
         if self._budget is not None and self._spent + charge > self._budget:
             raise L402BudgetError(
                 f"Invoice amount {charge} sats would exceed total budget "
