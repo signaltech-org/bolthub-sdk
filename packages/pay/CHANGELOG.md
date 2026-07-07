@@ -4,6 +4,41 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-07
+
+### Added
+
+- **`@bolthub/agent` merged in: `@bolthub/pay` is now the whole payments SDK,
+  both sides of the sale.** New exports, previously published as
+  `@bolthub/agent` (now deprecated): the HTTP buyer client `L402Client`
+  (+ `createL402Client`, `L402Error`, `L402BudgetError`, `L402TimeoutError`,
+  `L402PaymentError`), the wallet adapters (`LndWallet`, `LnbitsWallet`,
+  `PhoenixdWallet`, `NwcWallet`, `WebLnWallet`, `isWebLnAvailable`),
+  `FileSessionStore`, and macaroon `attenuate`. The package stays
+  zero-runtime-dependency and gains `@bolthub/agent`'s browser entry
+  (`browser` export condition).
+- **`Budget`** — the per-asset reserve/rollback accounting extracted from
+  `ToolClient`, now shareable: pass one instance as `ToolClientOptions.budget`
+  and `L402ClientOptions.budget` and the MCP-wire and HTTP-402 payment paths
+  draw from a single pool (`maxTotal`/`maxPerCall` per asset).
+- **`L402Client` options `budget` and `onPaid`**, and a per-request
+  `maxCostSats` on `L402RequestOptions` that tightens the per-request cap for
+  one call.
+- **`walletFromEnv()`** — the standard env-var → wallet mapping
+  (`LND_REST_HOST`/`LND_MACAROON`, `LNBITS_URL`/`LNBITS_ADMIN_KEY`,
+  `PHOENIXD_URL`/`PHOENIXD_PASSWORD`, `NWC_URI`), previously copy-pasted
+  across the cli/mcp-bridge/mcp-registry bins. Returns `undefined` when no
+  wallet is configured; NWC requires an injected `nwcConnect` factory (e.g.
+  backed by `@getalby/sdk`) since this package ships no NWC protocol
+  implementation.
+- `WalletAdapter` gained an optional `close()` for adapters that hold a
+  connection open (NWC relay sockets).
+
+### Changed
+
+- `L402PayerWallet` is now a type alias of `WalletAdapter` (they were always
+  structurally identical).
+
 ## [0.3.0] - 2026-07-06
 
 ### Removed

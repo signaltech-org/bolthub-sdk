@@ -1,8 +1,0 @@
-{
-  "name": "bolthub",
-  "version": "1.0.0",
-  "description": "Search, discover, and call paid APIs on the bolthub L402 marketplace using Lightning micropayments.",
-  "skills": [
-    ".claude/skills/bolthub-marketplace.md"
-  ]
-}

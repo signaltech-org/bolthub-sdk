@@ -4,6 +4,35 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-07
+
+### Added
+
+- **The full bolthub payments SDK**, mirroring `@bolthub/pay` 0.4.0. The
+  package grows from an L402 HTTP client into both sides of the sale:
+  - **Seller side**: `create_paywall(rails=...)` wraps any MCP tool handler
+    (sync or async, structural dicts, no MCP SDK dependency) behind a Tool
+    Payment Profile paywall; the challenge travels in
+    `_meta["ai.bolthub/payment"]` (`PAYMENT_META_KEY`, `SPEC_VERSION`).
+    Rails: `l402_rail(secret, invoice_provider)` mints a BOLT11 invoice plus
+    an HMAC-signed token per offer and verifies `<token>:<preimage>` proofs;
+    `facilitator_rail(...)` + `http_facilitator(...)` delegate mint/verify to
+    a hosted bolthub facilitator over HTTP.
+  - **Buyer side (MCP wire)**: `ToolClient` calls a tool, detects a
+    `payment_required` challenge, selects an offer it has a payer for
+    (`l402_payer(wallet)`, reusing the existing wallet adapters), budget-gates
+    the spend, pays, and retries with the proof; `on_paid`/`on_stage`
+    callbacks and `get_payment_challenge(result)` included.
+  - **`Budget`** — a per-asset reserve/rollback spending pool
+    (`max_total`/`max_per_call`, atomic under a lock) that can be shared
+    across clients, with `PaymentError`/`PaymentBudgetError`.
+  - **Token primitives** (`sign_l402_token`, `verify_l402_token`,
+    `verify_preimage`, `sha256_hex`, `random_preimage`), stdlib-only and
+    byte-for-byte wire-compatible with `@bolthub/pay` and the bolthub
+    gateway. Compatibility is pinned by shared golden vectors
+    (`tests/fixtures/tpp_vectors.json`) asserted by both this package's tests
+    and the TypeScript suite.
+
 ## [0.3.0] - 2026-06-26
 
 ### Added

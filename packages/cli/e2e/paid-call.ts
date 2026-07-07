@@ -15,7 +15,7 @@
  * Lives in e2e/ (not src/) so it is excluded from the published package
  * (`files: ["dist"]`).
  */
-import { L402Client, NwcWallet } from "@bolthub/agent";
+import { L402Client, NwcWallet } from "@bolthub/pay";
 
 const slug = process.argv[2] ?? "btc-intel";
 const path = process.argv[3] ?? "/v1/history/summary";

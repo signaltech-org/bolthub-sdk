@@ -1,0 +1,50 @@
+{
+  "name": "@bolthub/mcp",
+  "version": "0.1.0",
+  "description": "The bolthub MCP server — the whole marketplace, specific L402 gateways, and your other MCP servers behind one config entry with one shared Lightning budget",
+  "mcpName": "ai.bolthub/mcp",
+  "type": "module",
+  "bin": {
+    "bolthub-mcp": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --sourcemap=linked",
+    "prepublishOnly": "bun run build",
+    "dev": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "l402",
+    "lightning",
+    "bitcoin",
+    "micropayments",
+    "ai-agent",
+    "proxy",
+    "marketplace"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/signaltech-org/bolthub-sdk.git",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://docs.bolthub.ai",
+  "bugs": {
+    "url": "https://github.com/signaltech-org/bolthub-sdk/issues"
+  },
+  "dependencies": {
+    "@bolthub/pay": "workspace:*",
+    "@bolthub/shared": "workspace:*",
+    "@getalby/sdk": "^8.0.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/node": "^25.5.0",
+    "zod": "^3"
+  }
+}

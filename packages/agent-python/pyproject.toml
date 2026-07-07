@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bolthub"
-version = "0.3.0"
-description = "L402 client for AI agents — pay Lightning invoices automatically to access paywalled APIs"
+version = "0.4.0"
+description = "The bolthub payments SDK for Python: charge for an MCP tool or HTTP endpoint, and pay for them, over Lightning (L402)"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 dependencies = ["httpx>=0.24"]
-keywords = ["l402", "lightning", "bitcoin", "micropayments", "ai-agent", "paywall"]
+keywords = ["l402", "lightning", "bitcoin", "micropayments", "ai-agent", "paywall", "mcp", "payments"]
 
 [project.optional-dependencies]
 # Nostr Wallet Connect (NIP-47) support for NwcWallet.from_uri / AsyncNwcWallet.

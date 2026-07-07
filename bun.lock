@@ -8,62 +8,41 @@
         "typescript": "^5.7",
       },
     },
-    "packages/agent": {
-      "name": "@bolthub/agent",
-      "version": "0.3.1",
-      "devDependencies": {
-        "@types/node": "^25.5.0",
-        "macaroon": "^3.0.4",
-      },
-    },
     "packages/cli": {
       "name": "@bolthub/cli",
-      "version": "0.1.6",
+      "version": "0.2.0",
       "bin": {
         "bolthub": "./dist/index.js",
       },
       "dependencies": {
-        "@bolthub/agent": "workspace:*",
+        "@bolthub/pay": "workspace:*",
         "@getalby/sdk": "^8.0.3",
       },
     },
-    "packages/mcp-bridge": {
-      "name": "@bolthub/mcp-bridge",
-      "version": "0.1.6",
+    "packages/mcp": {
+      "name": "@bolthub/mcp",
+      "version": "0.1.0",
       "bin": {
-        "mcp-bridge": "./dist/index.js",
+        "bolthub-mcp": "./dist/index.js",
       },
       "dependencies": {
-        "@bolthub/agent": "workspace:*",
+        "@bolthub/pay": "workspace:*",
         "@bolthub/shared": "workspace:*",
         "@getalby/sdk": "^8.0.3",
       },
       "devDependencies": {
-        "@modelcontextprotocol/sdk": "^1.12.0",
-        "zod": "^3",
-      },
-    },
-    "packages/mcp-registry": {
-      "name": "@bolthub/mcp-registry",
-      "version": "0.1.6",
-      "bin": {
-        "mcp-registry": "./dist/index.js",
-      },
-      "dependencies": {
-        "@bolthub/agent": "workspace:*",
-        "@getalby/sdk": "^8.0.3",
-      },
-      "devDependencies": {
-        "@modelcontextprotocol/sdk": "^1.12.0",
+        "@modelcontextprotocol/sdk": "^1.27.1",
+        "@types/node": "^25.5.0",
         "zod": "^3",
       },
     },
     "packages/pay": {
       "name": "@bolthub/pay",
-      "version": "0.1.0",
+      "version": "0.4.0",
       "devDependencies": {
         "@modelcontextprotocol/sdk": "^1.27.1",
         "@types/node": "^25.5.0",
+        "macaroon": "^3.0.4",
         "zod": "^3",
       },
     },
@@ -87,13 +66,9 @@
     },
   },
   "packages": {
-    "@bolthub/agent": ["@bolthub/agent@workspace:packages/agent"],
-
     "@bolthub/cli": ["@bolthub/cli@workspace:packages/cli"],
 
-    "@bolthub/mcp-bridge": ["@bolthub/mcp-bridge@workspace:packages/mcp-bridge"],
-
-    "@bolthub/mcp-registry": ["@bolthub/mcp-registry@workspace:packages/mcp-registry"],
+    "@bolthub/mcp": ["@bolthub/mcp@workspace:packages/mcp"],
 
     "@bolthub/pay": ["@bolthub/pay@workspace:packages/pay"],
 

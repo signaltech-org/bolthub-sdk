@@ -1,7 +1,10 @@
 # @bolthub/pay
 
-Charge for an MCP tool (or HTTP endpoint) in a few lines. Lightning-only: settles
-over the **L402** rail. Seller side of the [bolthub Tool Payment Profile](./docs/tool-payment-profile-v0.md).
+The bolthub payments SDK — both sides of the sale, zero runtime dependencies.
+Charge for an MCP tool (or HTTP endpoint) in a few lines, and pay for them
+automatically. Lightning-only: settles over the **L402** rail. Implements the
+[bolthub Tool Payment Profile](./docs/tool-payment-profile-v0.md); absorbed
+`@bolthub/agent` (the HTTP L402 client + wallet adapters) in 0.4.0.
 
 > **Status:** the package follows SemVer from `0.1.0`; the wire format it
 > speaks (TPP `0.1`) is a draft and may evolve before 1.0. Breaking wire
@@ -121,8 +124,50 @@ const client = new ToolClient({
 const result = await client.callTool(mcpClient, "get_satellite_image", { lat, lon });
 ```
 
-`l402Payer`'s wallet is structurally `@bolthub/agent`'s `WalletAdapter`, so
-existing wallets (NWC / LND / phoenixd) drop straight in.
+`l402Payer`'s wallet is the same `WalletAdapter` the built-in adapters
+implement, so `LndWallet`, `PhoenixdWallet`, `NwcWallet`, etc. drop straight in.
+
+## Buyer side: pay for HTTP APIs (L402)
+
+For paywalled **HTTP** endpoints (a gateway answering `402 Payment Required`
+with a `WWW-Authenticate: L402` challenge), use `L402Client` — merged in from
+`@bolthub/agent` in 0.4.0. It pays the embedded Lightning invoice and retries
+with the proof, caching session tokens between calls:
+
+```ts
+import { L402Client, LndWallet } from "@bolthub/pay";
+
+const client = new L402Client({
+  wallet: new LndWallet({ host, macaroon }),
+  budgetSats: 10_000,
+  maxPerRequestSats: 100,
+});
+const resp = await client.get("https://acme.gw.bolthub.ai/v1/weather", {
+  params: { city: "berlin" },
+});
+```
+
+Wallet adapters: `LndWallet`, `LnbitsWallet`, `PhoenixdWallet`, `NwcWallet`
+(pass any NWC connection, e.g. `@getalby/sdk`'s `NWCClient`), and `WebLnWallet`
+for the browser build. `walletFromEnv()` builds one from the standard env vars
+(`LND_REST_HOST`/`LND_MACAROON`, `LNBITS_URL`/`LNBITS_ADMIN_KEY`,
+`PHOENIXD_URL`/`PHOENIXD_PASSWORD`, `NWC_URI`). `attenuate()` narrows an L402
+macaroon offline to delegate a restricted credential to a sub-agent.
+
+## One budget across both buyer paths
+
+`Budget` is the shared per-asset pool. Hand the same instance to a
+`ToolClient` (MCP-wire payments) and an `L402Client` (HTTP-402 payments) and
+together they can never spend past `maxTotal` — reservations are synchronous,
+so even concurrent calls across the two paths can't jointly overspend:
+
+```ts
+import { Budget, ToolClient, L402Client, l402Payer } from "@bolthub/pay";
+
+const budget = new Budget({ maxTotal: { sat: 10_000 }, maxPerCall: { sat: 500 } });
+const tools = new ToolClient({ payers: [l402Payer({ wallet })], budget });
+const http = new L402Client({ wallet, budget });
+```
 
 ## Adding a rail
 

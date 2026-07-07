@@ -6,16 +6,16 @@ bolthub is a payment layer for agent-to-tool commerce: charge agents for your MC
 
 | Package | Registry | Directory | What it is |
 | --- | --- | --- | --- |
-| [`@bolthub/pay`](https://www.npmjs.com/package/@bolthub/pay) | npm | `packages/pay` | Tool-payment SDK: price an MCP tool or HTTP endpoint (`createPaywall`), pay for tools within a budget (`PayingClient`); rails: L402, facilitator |
-| [`@bolthub/agent`](https://www.npmjs.com/package/@bolthub/agent) | npm | `packages/agent` | L402 payment client: wallet adapters (LND, LNbits, Phoenixd, NWC, WebLN), 402 challenge handling, session cache |
-| [`@bolthub/mcp-registry`](https://www.npmjs.com/package/@bolthub/mcp-registry) | npm | `packages/mcp-registry` | MCP server exposing the whole bolthub marketplace to AI agents |
-| [`@bolthub/mcp-bridge`](https://www.npmjs.com/package/@bolthub/mcp-bridge) | npm | `packages/mcp-bridge` | MCP server for a single bolthub gateway (one tool per endpoint) |
+| [`@bolthub/pay`](https://www.npmjs.com/package/@bolthub/pay) | npm | `packages/pay` | The payments SDK, both sides: price an MCP tool or HTTP endpoint (`createPaywall`), pay for tools within a budget (`ToolClient` for MCP, `L402Client` for HTTP), wallet adapters (LND, LNbits, Phoenixd, NWC, WebLN); rails: L402, facilitator. Zero runtime dependencies |
+| [`@bolthub/mcp`](https://www.npmjs.com/package/@bolthub/mcp) | npm | `packages/mcp` | The bolthub MCP server: marketplace + specific gateways + your other MCP servers behind one config entry, with one shared Lightning budget |
 | [`@bolthub/cli`](https://www.npmjs.com/package/@bolthub/cli) | npm | `packages/cli` | Terminal client for the marketplace |
 | [`@bolthub/verify`](https://www.npmjs.com/package/@bolthub/verify) | npm | `packages/verify` | Gateway signature verification middleware (Express/Fastify/Node) |
-| [`bolthub`](https://pypi.org/project/bolthub/) | PyPI | `packages/agent-python` | Python L402 client |
+| [`bolthub`](https://pypi.org/project/bolthub/) | PyPI | `packages/agent-python` | The payments SDK in Python: L402 client + wallets, and the seller-side paywall |
 | [`bolthub-verify`](https://pypi.org/project/bolthub-verify/) | PyPI | `packages/verify-python` | Python gateway signature verification (Flask/Django/FastAPI) |
 
-`packages/shared` is internal (never published); it is here because `@bolthub/mcp-bridge` bundles it.
+`packages/shared` is internal (never published); it is here because `@bolthub/mcp` bundles it.
+
+> **Consolidation (2026-07):** `@bolthub/agent` merged into `@bolthub/pay` (≥0.4.0); `@bolthub/mcp-registry` and `@bolthub/mcp-bridge` merged into `@bolthub/mcp`. The old names are deprecated on npm and point here.
 
 ## Relationship to the bolthub platform
 
@@ -34,7 +34,7 @@ npm audit signatures
 # or rebuild and compare yourself
 git clone https://github.com/signaltech-org/bolthub-sdk
 cd bolthub-sdk && bun install
-cd packages/mcp-registry && bun run build
+cd packages/mcp && bun run build
 ```
 
 See [SECURITY.md](SECURITY.md) for the trust model (what touches your wallet credentials and what doesn't) and how to report vulnerabilities.
@@ -46,7 +46,7 @@ bun install
 bun test
 ```
 
-Each TypeScript package builds with `bun run build` from its directory (`@bolthub/agent` must be built before the packages that bundle it).
+Each TypeScript package builds with `bun run build` from its directory (`@bolthub/pay` must be built before the packages that bundle it).
 
 ## License
 

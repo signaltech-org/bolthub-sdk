@@ -2,13 +2,11 @@
 
 import {
   L402Client,
-  LndWallet,
-  LnbitsWallet,
-  PhoenixdWallet,
-  NwcWallet,
   FileSessionStore,
-} from "@bolthub/agent";
-import type { WalletAdapter } from "@bolthub/agent";
+  walletFromEnv,
+  WALLET_ENV_HINT,
+} from "@bolthub/pay";
+import type { WalletAdapter, NwcConnection } from "@bolthub/pay";
 
 const API_URL = process.env.BOLTHUB_API_URL || "https://api.bolthub.ai";
 const GATEWAY_DOMAIN = "gw.bolthub.ai";
@@ -154,53 +152,37 @@ export async function info(slug: string): Promise<void> {
  */
 export type CliWallet = WalletAdapter & { close?: () => void };
 
+/**
+ * NWC connector backed by `@getalby/sdk` (a real dependency of the CLI;
+ * loaded lazily so the common wallets don't pay its import cost).
+ */
+async function nwcConnect(uri: string): Promise<NwcConnection & { close?: () => void }> {
+  const { NWCClient } = await import("@getalby/sdk");
+  const client = new NWCClient({ nostrWalletConnectUrl: uri });
+  return {
+    payInvoice: async (invoice: string) => {
+      const result = await client.payInvoice({ invoice });
+      return { preimage: result.preimage };
+    },
+    close: () => client.close(),
+  };
+}
+
 /** Select a wallet adapter based on environment variables. */
 export async function createWallet(): Promise<CliWallet> {
-  if (process.env.LND_REST_HOST && process.env.LND_MACAROON) {
-    return new LndWallet({
-      host: process.env.LND_REST_HOST,
-      macaroon: process.env.LND_MACAROON,
-    });
+  let wallet: CliWallet | undefined;
+  try {
+    wallet = await walletFromEnv({ nwcConnect });
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : err);
+    process.exit(1);
   }
-  if (process.env.LNBITS_URL && process.env.LNBITS_ADMIN_KEY) {
-    return new LnbitsWallet({
-      url: process.env.LNBITS_URL,
-      adminKey: process.env.LNBITS_ADMIN_KEY,
-    });
+  if (!wallet) {
+    console.error("No wallet configured.");
+    console.error(WALLET_ENV_HINT);
+    process.exit(1);
   }
-  if (process.env.PHOENIXD_URL && process.env.PHOENIXD_PASSWORD) {
-    return new PhoenixdWallet({
-      baseUrl: process.env.PHOENIXD_URL,
-      password: process.env.PHOENIXD_PASSWORD,
-    });
-  }
-  const nwcUri = process.env.NWC_URI;
-  if (nwcUri) {
-    try {
-      const { NWCClient } = await import("@getalby/sdk");
-      const client = new NWCClient({ nostrWalletConnectUrl: nwcUri });
-      const wallet: CliWallet = new NwcWallet({
-        payInvoice: async (invoice: string) => {
-          const result = await client.payInvoice({ invoice });
-          return { preimage: result.preimage };
-        },
-      });
-      wallet.close = () => client.close();
-      return wallet;
-    } catch (err) {
-      console.error(
-        "Failed to load @getalby/sdk for NWC support:",
-        err instanceof Error ? err.message : err,
-      );
-      process.exit(1);
-    }
-  }
-  console.error("No wallet configured. Set one of:");
-  console.error("  PHOENIXD_URL + PHOENIXD_PASSWORD");
-  console.error("  LND_REST_HOST + LND_MACAROON");
-  console.error("  LNBITS_URL + LNBITS_ADMIN_KEY");
-  console.error("  NWC_URI");
-  process.exit(1);
+  return wallet;
 }
 
 /** Call a gateway endpoint via the L402 client and print the response. */

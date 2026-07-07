@@ -1,13 +1,14 @@
 {
   "name": "@bolthub/pay",
-  "version": "0.3.0",
-  "description": "Charge for an MCP tool or HTTP endpoint in a few lines. Lightning-only (L402) micropayments for AI-agent tool calls",
+  "version": "0.4.0",
+  "description": "The bolthub payments SDK: charge for an MCP tool or HTTP endpoint — and pay for them — in a few lines. Lightning-only (L402) micropayments for AI-agent tool calls",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
+      "browser": "./dist/index.browser.mjs",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
     },
@@ -15,7 +16,7 @@
   },
   "files": ["dist", "docs"],
   "scripts": {
-    "build": "rm -rf dist tsconfig.build.tsbuildinfo && bun build src/index.ts --outdir dist --target node --format esm --sourcemap=inline && cp dist/index.js dist/index.mjs && bun build src/index.ts --outdir dist --target node --format cjs --sourcemap=inline && bun x tsc --emitDeclarationOnly --outDir dist --declaration --project tsconfig.build.json",
+    "build": "rm -rf dist tsconfig.build.tsbuildinfo && bun build src/index.ts --outdir dist --target node --format esm --sourcemap=inline && cp dist/index.js dist/index.mjs && bun build src/index.ts --outdir dist --target node --format cjs --sourcemap=inline && bun build src/index.browser.ts --outfile dist/index.browser.mjs --target browser --format esm --sourcemap=inline && bun x tsc --emitDeclarationOnly --outDir dist --declaration --project tsconfig.build.json",
     "prepublishOnly": "bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
@@ -44,6 +45,7 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@types/node": "^25.5.0",
+    "macaroon": "^3.0.4",
     "zod": "^3"
   }
 }

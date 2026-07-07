@@ -4,15 +4,15 @@
  */
 
 import type { Offer, PaymentPayer } from "../types";
+import type { WalletAdapter } from "../http/types";
 
 /**
- * Anything that can pay a BOLT11 invoice and return its preimage. Structurally
- * identical to `@bolthub/agent`'s `WalletAdapter`, so `NwcWallet`, `LndWallet`,
- * `PhoenixdWallet`, etc. drop straight in.
+ * Anything that can pay a BOLT11 invoice and return its preimage — the same
+ * {@link WalletAdapter} the HTTP `L402Client` uses, so `NwcWallet`,
+ * `LndWallet`, `PhoenixdWallet`, etc. drop straight in. (Alias kept from
+ * 0.3.x, when the wallets lived in `@bolthub/agent`.)
  */
-export interface L402PayerWallet {
-  payInvoice(bolt11: string): Promise<{ preimage: string }>;
-}
+export type L402PayerWallet = WalletAdapter;
 
 export interface L402PayerOptions {
   wallet: L402PayerWallet;

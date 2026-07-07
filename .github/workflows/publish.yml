@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: "Packages to publish (comma-separated: agent,mcp-bridge,mcp-registry,verify,cli,pay,python,verify-python)"
+        description: "Packages to publish (comma-separated: pay,mcp,cli,verify,python,verify-python)"
         required: false
-        default: "agent,mcp-bridge,mcp-registry,verify,cli,pay,python,verify-python"
+        default: "pay,mcp,cli,verify,python,verify-python"
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -29,24 +29,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - key: agent
-            pkg: "@bolthub/agent"
-            dir: packages/agent
-          - key: verify
-            pkg: "@bolthub/verify"
-            dir: packages/verify
-          - key: mcp-registry
-            pkg: "@bolthub/mcp-registry"
-            dir: packages/mcp-registry
-          - key: mcp-bridge
-            pkg: "@bolthub/mcp-bridge"
-            dir: packages/mcp-bridge
-          - key: cli
-            pkg: "@bolthub/cli"
-            dir: packages/cli
           - key: pay
             pkg: "@bolthub/pay"
             dir: packages/pay
+          - key: mcp
+            pkg: "@bolthub/mcp"
+            dir: packages/mcp
+          - key: cli
+            pkg: "@bolthub/cli"
+            dir: packages/cli
+          - key: verify
+            pkg: "@bolthub/verify"
+            dir: packages/verify
     steps:
       - uses: actions/checkout@v6
 
@@ -75,11 +69,11 @@ jobs:
           echo "local=$LOCAL" >> $GITHUB_OUTPUT
           echo "changed=$( [ "$PUBLISHED" != "$LOCAL" ] && echo true || echo false )" >> $GITHUB_OUTPUT
 
-      # @bolthub/agent is a workspace dep consumed via its built dist —
+      # @bolthub/pay is a workspace dep consumed via its built dist —
       # it must exist before testing/building the packages that bundle it.
-      - name: Build workspace dep @bolthub/agent
-        if: steps.check-version.outputs.changed == 'true' && matrix.key != 'agent'
-        working-directory: packages/agent
+      - name: Build workspace dep @bolthub/pay
+        if: steps.check-version.outputs.changed == 'true' && matrix.key != 'pay'
+        working-directory: packages/pay
         run: bun run build
 
       - name: Test

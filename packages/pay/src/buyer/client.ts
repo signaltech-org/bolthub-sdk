@@ -15,6 +15,8 @@
  */
 
 import { PAYMENT_META_KEY } from "../paywall";
+import { Budget } from "../budget";
+import { PaymentError, PaymentBudgetError } from "../errors";
 import type { Offer, PaymentChallenge, PaymentPayer, ToolResult } from "../types";
 
 export type PayStage = "calling" | "paying" | "retrying";
@@ -26,6 +28,13 @@ export interface ToolClientOptions {
   maxTotal?: Partial<Record<string, number>>;
   /** Per-asset per-call ceiling. Unset asset = unlimited. */
   maxPerCall?: Partial<Record<string, number>>;
+  /**
+   * An external {@link Budget} to draw from instead of the client's own
+   * accounting. Pass the same instance to several clients (e.g. a
+   * `ToolClient` and an `L402Client`) to enforce ONE spending pool across
+   * them. Mutually exclusive with `maxTotal`/`maxPerCall`.
+   */
+  budget?: Budget;
   /** Called after a successful payment, before the retry. */
   onPaid?: (info: { scheme: string; amount: number; asset: string; resource: string }) => void;
   /** Lifecycle callback. */
@@ -41,24 +50,9 @@ export interface McpCallToolClient {
   }): Promise<unknown>;
 }
 
-/** Base error for buyer-side payment failures. */
-export class PaymentError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: unknown,
-  ) {
-    super(message);
-    this.name = "PaymentError";
-  }
-}
-
-/** Thrown when every offered rail exceeds the configured budget. */
-export class PaymentBudgetError extends PaymentError {
-  constructor(message: string) {
-    super(message);
-    this.name = "PaymentBudgetError";
-  }
-}
+// Moved to ../errors so budget.ts can throw them too; re-exported here so the
+// package's public surface (and 0.3.x import sites) are unchanged.
+export { PaymentError, PaymentBudgetError } from "../errors";
 
 /** Extract a `payment_required` challenge from a tool result, if present. */
 export function getPaymentChallenge(result: ToolResult): PaymentChallenge | undefined {
@@ -69,24 +63,31 @@ export function getPaymentChallenge(result: ToolResult): PaymentChallenge | unde
 
 export class ToolClient {
   private readonly payers: PaymentPayer[];
-  private readonly spent: Record<string, number> = {};
+  private readonly budget: Budget;
 
   constructor(private readonly options: ToolClientOptions) {
     if (!options.payers || options.payers.length === 0) {
       throw new Error("PayingClient: at least one payer is required");
     }
+    if (options.budget && (options.maxTotal || options.maxPerCall)) {
+      throw new Error(
+        "ToolClient: pass either an external `budget` or `maxTotal`/`maxPerCall`, not both",
+      );
+    }
     this.payers = options.payers;
+    this.budget =
+      options.budget ??
+      new Budget({ maxTotal: options.maxTotal, maxPerCall: options.maxPerCall });
   }
 
-  /** Total spent so far in `asset`. */
+  /** Total spent so far in `asset` (from the shared pool when an external budget is used). */
   spentFor(asset: string): number {
-    return this.spent[asset] ?? 0;
+    return this.budget.spentFor(asset);
   }
 
   /** Remaining budget in `asset` (`Infinity` if none configured). */
   remainingFor(asset: string): number {
-    const max = this.options.maxTotal?.[asset];
-    return max === undefined ? Infinity : Math.max(0, max - this.spentFor(asset));
+    return this.budget.remainingFor(asset);
   }
 
   /**
@@ -158,26 +159,15 @@ export class ToolClient {
 
   /** Pure budget check; returns a reason string when the offer can't be paid. */
   private budgetDenial(offer: Offer): string | undefined {
-    const asset = String(offer.asset);
-    const amount = Number(offer.amount);
-    if (!Number.isFinite(amount) || amount <= 0) return "invalid offer amount";
-    const perCall = this.options.maxPerCall?.[asset];
-    if (perCall !== undefined && amount > perCall) return "exceeds per-call cap";
-    const max = this.options.maxTotal?.[asset];
-    if (max !== undefined && this.spentFor(asset) + amount > max) return "exceeds total budget";
-    return undefined;
+    return this.budget.check(String(offer.asset), Number(offer.amount));
   }
 
   private reserve(offer: Offer): void {
-    const denial = this.budgetDenial(offer);
-    if (denial) throw new PaymentBudgetError(`Offer ${offer.amount} ${offer.asset} ${denial}`);
-    const asset = String(offer.asset);
-    this.spent[asset] = this.spentFor(asset) + Number(offer.amount);
+    this.budget.reserve(String(offer.asset), Number(offer.amount));
   }
 
   private rollback(offer: Offer): void {
-    const asset = String(offer.asset);
-    this.spent[asset] = this.spentFor(asset) - Number(offer.amount);
+    this.budget.rollback(String(offer.asset), Number(offer.amount));
   }
 }
 

@@ -1,6 +1,10 @@
 # bolthub
 
-L402 client for AI agents. Automatically handles 402 Payment Required challenges, pays Lightning invoices, and retries requests with proof of payment.
+The bolthub payments SDK for Python, mirroring [`@bolthub/pay`](https://www.npmjs.com/package/@bolthub/pay):
+
+- **Buyer, HTTP**: `L402Client` handles `402 Payment Required` challenges, pays the Lightning invoice, and retries with proof of payment.
+- **Buyer, MCP**: `ToolClient` pays Tool Payment Profile (TPP) challenges on the MCP wire.
+- **Seller**: `create_paywall` + rails turn any MCP tool handler into a paid one, wire-compatible with the TypeScript SDK and the bolthub gateway.
 
 ## Install
 
@@ -191,6 +195,68 @@ client = L402Client(
 )
 ```
 
+## Selling: paywall an MCP tool (TPP)
+
+`create_paywall` wraps any tool handler so a call must carry a valid payment
+proof. It implements the [bolthub Tool Payment Profile](https://github.com/signaltech-org/bolthub-sdk/blob/main/packages/pay/docs/tool-payment-profile-v0.md):
+an unpaid call returns a `payment_required` challenge in
+`result["_meta"]["ai.bolthub/payment"]`; a call carrying a verified proof runs
+the real handler. Framework-agnostic: handlers take `(args, extra)` and return
+a dict-shaped `ToolResult`, so there is no MCP SDK dependency (both `def` and
+`async def` handlers work).
+
+```python
+from bolthub import create_paywall, l402_rail
+
+class MyInvoices:
+    def create_invoice(self, amount_sat: int, memo: str) -> tuple[str, str]:
+        """Return (bolt11_invoice, payment_hash_hex) from your node/wallet."""
+        ...
+
+pay = create_paywall(rails=[l402_rail(SECRET, MyInvoices())])
+
+# Wrap a handler directly...
+paid_handler = pay(get_image, price={"amount": 2000, "asset": "sat"},
+                   resource="get_satellite_image")
+
+# ...or register on an MCP-style server (resource defaults to the tool name):
+pay.tool(server, "get_satellite_image", "Recent imagery", schema, get_image,
+         price={"amount": 2000})
+
+pay.advertise({"amount": 2000})  # discovery-time price advertisement
+```
+
+To run on the hosted path instead of minting locally, swap the rail:
+`facilitator_rail("l402", ["sat"], http_facilitator(base_url, api_key))`.
+
+## Buying: pay for MCP tool calls (`ToolClient`)
+
+`ToolClient` is the buyer-side counterpart: it calls a tool, and when the
+result is a `payment_required` challenge it picks an offer it has a payer for,
+budget-gates it, pays, and retries the call with the proof in `_meta`.
+
+```python
+from bolthub import Budget, ToolClient, l402_payer, NwcWallet
+
+buyer = ToolClient(
+    [l402_payer(NwcWallet.from_uri(NWC_URI))],
+    max_total={"sat": 10_000},     # per-asset lifetime ceiling
+    max_per_call={"sat": 500},     # per-asset per-call ceiling
+)
+result = buyer.call_tool(mcp_client, "get_satellite_image", {"lat": 47.5})
+buyer.spent_for("sat")             # 2000
+```
+
+Pass one shared `Budget(max_total={"sat": 10_000})` as `budget=` to several
+clients to enforce a single spending pool across them. Budget violations raise
+`PaymentBudgetError`; failed payments roll the reservation back and raise
+`PaymentError`.
+
+Token primitives (`sign_l402_token`, `verify_l402_token`, `verify_preimage`,
+`sha256_hex`, `random_preimage`) are exported too, and produce byte-identical
+tokens to the TypeScript SDK (asserted by shared golden vectors in
+`tests/fixtures/tpp_vectors.json`).
+
 ## Delegation (attenuation)
 
 A paid L402 macaroon can be *narrowed offline* and handed to a sub-agent, so a
@@ -230,6 +296,18 @@ The gateway enforces every caveat down the chain (most restrictive wins).
 | `L402Error` | Base exception for L402 failures |
 | `L402BudgetError` | Raised when budget limits are exceeded |
 | `attenuate(...)` | Narrow a macaroon offline to delegate a restricted credential (needs `bolthub[delegation]`) |
+| `create_paywall(rails=...)` / `Paywall` | Seller: wrap MCP tool handlers behind a TPP paywall |
+| `l402_rail(secret, invoice_provider)` | L402 settlement rail (mints invoice + signed token, verifies proofs) |
+| `facilitator_rail(...)` / `http_facilitator(...)` | Rail that delegates mint/verify to a hosted bolthub facilitator |
+| `ToolClient` | Buyer: pay-and-retry client for TPP challenges on the MCP wire |
+| `l402_payer(wallet)` | Buyer-side L402 payer (`<token>:<preimage>` proofs) |
+| `Budget` | Per-asset reserve/rollback spending pool, shareable across clients |
+| `PaymentError` / `PaymentBudgetError` | Buyer-side payment failures / budget violations |
+| `get_payment_challenge(result)` | Extract a `payment_required` challenge from a tool result |
+| `sign_l402_token` / `verify_l402_token` | HMAC-signed L402 token primitives (wire-compatible with `@bolthub/pay`) |
+| `verify_preimage` / `sha256_hex` / `random_preimage` | Preimage and hash helpers |
+| `PAYMENT_META_KEY` / `SPEC_VERSION` | TPP `_meta` key (`ai.bolthub/payment`) and spec version (`0.1`) |
+| `PaymentRail` / `PaymentPayer` / `InvoiceProvider` / `FacilitatorTransport` | Protocols for custom rails, payers, and invoice backends |
 
 ## License
 
