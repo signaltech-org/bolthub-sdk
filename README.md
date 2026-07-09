@@ -21,7 +21,7 @@ bolthub is a payment layer for agent-to-tool commerce: charge agents for your MC
 
 The bolthub platform (gateway, API, web app) lives in a private monorepo. The SDK packages above are developed there and synced to this repository, which is the **publish origin**: releases are tagged here and built + published by [CI](.github/workflows/publish.yml) with [npm provenance](https://docs.npmjs.com/generating-provenance-statements), so what's on npm is verifiably built from this public source.
 
-Issues and PRs are welcome here. Accepted changes are applied to the monorepo first, then sync back out with the next release.
+Issues and PRs are welcome here, but note that this repo is a generated mirror: PRs are never merged directly. Accepted changes are applied to the monorepo first (with attribution), then sync back out with the next release. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
 
 ## Verifying what you install
 

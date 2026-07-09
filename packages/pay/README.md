@@ -169,6 +169,40 @@ const tools = new ToolClient({ payers: [l402Payer({ wallet })], budget });
 const http = new L402Client({ wallet, budget });
 ```
 
+## Verify tenant webhooks
+
+If you subscribe to bolthub webhooks (`invoice.settled`, `billing.*`, and
+friends), `verifyWebhook` checks the delivery signature and returns the parsed
+event. It enforces a replay window (default 5 minutes) and uses a
+constant-time compare. Every failure throws `WebhookVerificationError` with a
+typed `code` such as `signature_mismatch` or `timestamp_out_of_tolerance`.
+
+```ts
+import { verifyWebhook, WebhookVerificationError } from "@bolthub/pay";
+
+// Express: use express.raw() so req.body is the raw bytes.
+app.post("/webhooks/bolthub", express.raw({ type: "application/json" }), (req, res) => {
+  try {
+    const event = verifyWebhook({
+      secret: process.env.BOLTHUB_WEBHOOK_SECRET!,
+      payload: req.body,
+      signature: req.header("x-webhook-signature")!,
+      timestamp: req.header("x-webhook-timestamp")!,
+    });
+    if (event.event === "invoice.settled") {
+      // event.data is the invoice payload
+    }
+    res.sendStatus(200);
+  } catch (err) {
+    if (err instanceof WebhookVerificationError) return res.sendStatus(400);
+    throw err;
+  }
+});
+```
+
+The signature covers the raw request body, so capture it before any JSON
+parser runs. Node-only: this export is not in the browser build.
+
 ## Adding a rail
 
 The paywall core is rail-agnostic. Implement [`PaymentRail`](./src/types.ts)

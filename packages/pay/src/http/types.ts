@@ -63,6 +63,26 @@ export interface L402ClientOptions {
    */
   payRetries?: number;
 
+  /**
+   * Automatic retries when the server answers `429 Too Many Requests`,
+   * on every leg of the flow (challenge, session reuse, and the retry
+   * after payment). Waits out the response's `Retry-After` (delta-seconds
+   * or HTTP-date; 1s, 2s, … backoff when absent) and re-sends the SAME
+   * request. On the post-payment leg this re-presents the same
+   * `macaroon:preimage` — bolthub gateways revert the invoice consumption
+   * when they answer 429, so the retry re-uses the payment rather than
+   * paying twice. Requests with a stream body are not retried (the body
+   * can't be re-read). Defaults to 2; set 0 to disable.
+   */
+  rateLimitRetries?: number;
+
+  /**
+   * Longest single `Retry-After` wait the client will honor, in
+   * milliseconds; a 429 demanding more is returned to the caller
+   * immediately. Defaults to 10 000.
+   */
+  maxRetryAfterMs?: number;
+
   /** Optional callback invoked when the request transitions between L402 stages. */
   onStage?: (stage: "invoice" | "paying" | "loading") => void;
 

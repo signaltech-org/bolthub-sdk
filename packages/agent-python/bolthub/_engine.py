@@ -13,6 +13,7 @@ import re
 import threading
 import time
 from datetime import datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
@@ -64,6 +65,25 @@ def session_key(url: str) -> str:
     """Cache key for a URL: ``<netloc><path>`` (scheme/query ignored)."""
     parsed = urlparse(url)
     return f"{parsed.netloc}{parsed.path}"
+
+
+def retry_after_seconds(headers: Mapping[str, str]) -> float | None:
+    """Parse a ``Retry-After`` header (delta-seconds or HTTP-date) into
+    seconds to wait, or ``None`` when absent or unparseable."""
+    raw = headers.get("retry-after")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    return max(0.0, parsed.timestamp() - time.time())
 
 
 def update_session(store: SessionStore, key: str, headers: Mapping[str, str]) -> None:

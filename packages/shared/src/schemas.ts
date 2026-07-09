@@ -5,7 +5,7 @@ export const pricingModelEnum = z.enum(["per_request", "per_kb", "token_bucket",
 export const invoiceStatusEnum = z.enum(["pending", "settled", "consumed", "expired", "cancelled"]);
 export const billingCycleStatusEnum = z.enum(["accumulating", "invoiced", "paid", "failed"]);
 export const billingStatusEnum = z.enum(["active", "trial", "grace_period", "suspended"]);
-export const feeExemptReasonEnum = z.enum(["trial", "vip"]);
+export const feeExemptReasonEnum = z.enum(["trial", "vip", "unused"]);
 export const sessionStatusEnum = z.enum(["active", "expired", "depleted"]);
 
 export const tenantSchema = z.object({

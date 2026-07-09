@@ -92,6 +92,16 @@ export { WebLnWallet, isWebLnAvailable } from "./wallets/webln";
 export { walletFromEnv, WALLET_ENV_HINT } from "./wallets/from-env";
 export type { WalletFromEnvOptions } from "./wallets/from-env";
 
+// ── Tenant webhook verification (Node-only, not in the browser entry) ──────
+
+export { verifyWebhook, WebhookVerificationError } from "./webhooks";
+export type {
+  VerifyWebhookOptions,
+  WebhookEvent,
+  WebhookEventType,
+  WebhookErrorCode,
+} from "./webhooks";
+
 import { L402Client as _L402Client } from "./http/client";
 import type { L402ClientOptions as _L402ClientOptions } from "./http/types";
 

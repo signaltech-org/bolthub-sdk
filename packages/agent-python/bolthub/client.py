@@ -15,6 +15,7 @@ from ._engine import (
     extract_amount,
     parse_challenge,
     response_amount_sats,
+    retry_after_seconds,
     session_key,
     update_session,
 )
@@ -74,6 +75,17 @@ class L402Client:
             ``budget_sats``.
         on_paid: Called after each successful invoice payment with
             ``{"scheme", "amount", "asset", "resource"}``.
+        rate_limit_retries: Automatic retries when the server answers
+            ``429 Too Many Requests``, on every leg of the flow. Waits out
+            the response's ``Retry-After`` (delta-seconds or HTTP-date; 1s,
+            2s, … backoff when absent) and re-sends the same request. On the
+            post-payment leg this re-presents the same ``macaroon:preimage``
+            — bolthub gateways revert the invoice consumption when they
+            answer 429, so the retry re-uses the payment rather than paying
+            twice. Defaults to 2; 0 disables.
+        max_retry_after: Longest single ``Retry-After`` wait honored, in
+            seconds; a 429 demanding more is returned immediately.
+            Defaults to 10.
     """
 
     def __init__(
@@ -88,6 +100,8 @@ class L402Client:
         price_header: str | None = None,
         budget: Budget | None = None,
         on_paid: Optional[Callable[[dict], None]] = None,
+        rate_limit_retries: int = 2,
+        max_retry_after: float = 10.0,
     ):
         if budget is not None and budget_sats is not None:
             raise ValueError(
@@ -103,6 +117,8 @@ class L402Client:
         self._price_header = price_header
         self._timeout = timeout
         self._on_paid = on_paid
+        self._rate_limit_retries = rate_limit_retries
+        self._max_retry_after = max_retry_after
         self._client = httpx.Client(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
 
@@ -157,13 +173,13 @@ class L402Client:
             headers = dict(kwargs.get("headers", {}))
             headers["X-Session-Token"] = session.token
             kw = {**kwargs, "headers": headers}
-            resp = self._client.request(method, url, **kw)
+            resp = self._request_retrying_429(method, url, **kw)
             if resp.status_code != 402:
                 update_session(self._store, skey, resp.headers)
                 return resp
             self._store.delete(skey)
 
-        resp = self._client.request(method, url, **kwargs)
+        resp = self._request_retrying_429(method, url, **kwargs)
 
         if resp.status_code != 402:
             return resp
@@ -196,8 +212,30 @@ class L402Client:
         headers["Authorization"] = f"L402 {macaroon}:{preimage}"
         kwargs["headers"] = headers
 
-        resp = self._client.request(method, url, **kwargs)
+        # A 429 here is retried with the SAME L402 proof: the gateway
+        # reverts the invoice consumption when it answers 429, so the
+        # retry re-uses the payment already made above.
+        resp = self._request_retrying_429(method, url, **kwargs)
         update_session(self._store, skey, resp.headers)
+        return resp
+
+    def _request_retrying_429(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        """One request, waiting out up to ``rate_limit_retries`` 429 answers.
+
+        A 429 whose wait would exceed ``max_retry_after`` — or arriving after
+        retries are exhausted — is returned unchanged for the caller.
+        """
+        resp = self._client.request(method, url, **kwargs)
+        for attempt in range(1, self._rate_limit_retries + 1):
+            if resp.status_code != 429:
+                break
+            wait = retry_after_seconds(resp.headers)
+            if wait is None:
+                wait = float(2 ** (attempt - 1))
+            if wait > self._max_retry_after:
+                break
+            time.sleep(wait)
+            resp = self._client.request(method, url, **kwargs)
         return resp
 
     def close(self) -> None:

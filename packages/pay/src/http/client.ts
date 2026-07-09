@@ -56,6 +56,8 @@ export class L402Client {
   private priceHeader?: string;
   private timeoutMs: number;
   private payRetries: number;
+  private rateLimitRetries: number;
+  private maxRetryAfterMs: number;
   private spentSats = 0;
   private onStage?: (stage: L402Stage) => void;
   private onPaid?: L402ClientOptions["onPaid"];
@@ -73,6 +75,8 @@ export class L402Client {
     this.priceHeader = options.priceHeader;
     this.timeoutMs = options.timeoutMs ?? 45_000;
     this.payRetries = options.payRetries ?? 2;
+    this.rateLimitRetries = options.rateLimitRetries ?? 2;
+    this.maxRetryAfterMs = options.maxRetryAfterMs ?? 10_000;
     this.onStage = options.onStage;
     this.onPaid = options.onPaid;
     this.store = options.sessionStore ?? new InMemorySessionStore();
@@ -138,11 +142,15 @@ export class L402Client {
       headers.set("X-Session-Token", existingSession.token);
 
       try {
-        const resp = await fetch(finalUrl, {
-          ...fetchOptions,
-          headers,
-          signal: AbortSignal.timeout(this.timeoutMs),
-        });
+        const resp = await this.fetchRetrying429(
+          () =>
+            fetch(finalUrl, {
+              ...fetchOptions,
+              headers,
+              signal: AbortSignal.timeout(this.timeoutMs),
+            }),
+          fetchOptions.body,
+        );
 
         if (resp.status !== 402) {
           this.updateSessionFromResponse(sessionKey, resp);
@@ -161,10 +169,14 @@ export class L402Client {
 
     let resp: Response;
     try {
-      resp = await fetch(finalUrl, {
-        ...fetchOptions,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
+      resp = await this.fetchRetrying429(
+        () =>
+          fetch(finalUrl, {
+            ...fetchOptions,
+            signal: AbortSignal.timeout(this.timeoutMs),
+          }),
+        fetchOptions.body,
+      );
     } catch (err) {
       if (err instanceof DOMException && err.name === "TimeoutError") {
         throw new L402TimeoutError("Request timed out waiting for the endpoint to respond");
@@ -213,11 +225,18 @@ export class L402Client {
     headers.set("Authorization", `L402 ${challenge.macaroon}:${preimage}`);
 
     try {
-      const authedResp = await fetch(finalUrl, {
-        ...fetchOptions,
-        headers,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
+      // A 429 here is retried with the SAME L402 proof: the gateway
+      // reverts the invoice consumption when it answers 429, so the
+      // retry re-uses the payment already made above.
+      const authedResp = await this.fetchRetrying429(
+        () =>
+          fetch(finalUrl, {
+            ...fetchOptions,
+            headers,
+            signal: AbortSignal.timeout(this.timeoutMs),
+          }),
+        fetchOptions.body,
+      );
 
       this.updateSessionFromResponse(sessionKey, authedResp);
 
@@ -228,6 +247,38 @@ export class L402Client {
       }
       throw err;
     }
+  }
+
+  /** Parse a `Retry-After` header (delta-seconds or HTTP-date) into ms. */
+  private parseRetryAfterMs(resp: Response): number | null {
+    const raw = resp.headers.get("Retry-After");
+    if (!raw) return null;
+    const secs = Number(raw);
+    if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+    const date = Date.parse(raw);
+    if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+    return null;
+  }
+
+  /**
+   * Run one fetch attempt, waiting out up to `rateLimitRetries` 429
+   * answers. Each attempt calls `doFetch` again so timeout signals are
+   * fresh. A 429 whose wait would exceed `maxRetryAfterMs` — or whose
+   * request body is a non-replayable stream — is returned as-is.
+   */
+  private async fetchRetrying429(
+    doFetch: () => Promise<Response>,
+    body: BodyInit | null | undefined,
+  ): Promise<Response> {
+    let resp = await doFetch();
+    if (this.rateLimitRetries === 0 || body instanceof ReadableStream) return resp;
+    for (let attempt = 1; attempt <= this.rateLimitRetries && resp.status === 429; attempt++) {
+      const waitMs = this.parseRetryAfterMs(resp) ?? 1000 * 2 ** (attempt - 1);
+      if (waitMs > this.maxRetryAfterMs) return resp;
+      await new Promise((r) => setTimeout(r, waitMs));
+      resp = await doFetch();
+    }
+    return resp;
   }
 
   /**
