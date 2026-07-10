@@ -4,6 +4,32 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-10
+
+### Added
+
+- **Prepaid bundles.** `L402Client.buyBundle(url, uses, opts)` pays one invoice
+  for an N-use credential; subsequent `request`/`get`/`post` calls to that URL
+  spend it down with no further payment until it 402s, then fall through to the
+  normal flow. Budget and `maxCostSats` are enforced on the purchase.
+  `getBundleCredential` / `dropBundleCredential` / `clearBundles` manage the
+  cached credential.
+- **`attenuate()` v2.** New tighten-only options `nUses`, `maxSats`, and
+  `pathPrefix` (in addition to `method`/`validUntil`), validated against the
+  credential's existing caveats so a child can never widen scope. Mirrors the
+  gateway verifier's folds.
+- **Delegation budget interlock.** `Budget.reserveTotal` and
+  `L402Client.reserveDelegatedCap` / `rollbackDelegatedCap` reserve a child's
+  spend cap from the parent budget at mint (== remaining accepted, +1 refused).
+- **Payment-status / free retries.** `readPaymentStatus` parses the
+  `X-Bolthub-Payment` headers; `L402Client` auto-retries free-retryable upstream
+  failures (5xx/429/408/unreachable) with jittered backoff (opt out with
+  `retryOnUpstreamFailure: false`), and a typed `UpstreamFailedError` is
+  available via `throwOnUpstreamFailure`.
+- **Payment receipts.** `ReceiptStore` (in-memory + `FileReceiptStore`),
+  `onPaid` enriched with preimage/invoice/payment_hash, `exportReceipts`
+  (JSON/CSV, redactable), and dependency-free offline `verifyReceipt`.
+
 ## [0.4.0] - 2026-07-07
 
 ### Added

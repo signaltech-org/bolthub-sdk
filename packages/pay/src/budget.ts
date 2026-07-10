@@ -64,6 +64,27 @@ export class Budget {
     this.spent[asset] = this.spentFor(asset) + amount;
   }
 
+  /**
+   * Reserve against the TOTAL budget only, ignoring the per-call ceiling — for
+   * a delegated child's spend cap, which is a lifetime ceiling for the child
+   * rather than a single call (AF-D6). Throws {@link PaymentBudgetError} when
+   * the cap exceeds remaining headroom (boundary: `== remaining` accepted,
+   * `remaining + 1` refused). Return it with {@link rollback} on the child's
+   * revocation or expiry.
+   */
+  reserveTotal(asset: string, amount: number): void {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new PaymentBudgetError(`Delegated cap ${amount} ${asset} invalid amount`);
+    }
+    const max = this.limits.maxTotal?.[asset];
+    if (max !== undefined && this.spentFor(asset) + amount > max) {
+      throw new PaymentBudgetError(
+        `Delegated cap ${amount} ${asset} exceeds remaining budget ${this.remainingFor(asset)}`,
+      );
+    }
+    this.spent[asset] = this.spentFor(asset) + amount;
+  }
+
   /** Return a reservation after a failed payment. */
   rollback(asset: string, amount: number): void {
     this.spent[asset] = this.spentFor(asset) - amount;

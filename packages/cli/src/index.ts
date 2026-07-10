@@ -3,6 +3,9 @@
 import {
   L402Client,
   FileSessionStore,
+  FileReceiptStore,
+  exportReceipts,
+  verifyReceipt,
   walletFromEnv,
   WALLET_ENV_HINT,
 } from "@bolthub/pay";
@@ -246,6 +249,56 @@ async function call(
   }
 }
 
+/**
+ * `bolthub receipts export`: serialize the local receipt ledger
+ * (`~/.bolthub/receipts.jsonl` unless --file) to stdout as JSON or CSV.
+ */
+export function receiptsExport(options: {
+  file?: string;
+  format?: "json" | "csv";
+  redact?: boolean;
+  from?: string;
+  to?: string;
+}): string {
+  const store = new FileReceiptStore(options.file);
+  const receipts = store.list({
+    from: options.from ? new Date(options.from) : undefined,
+    to: options.to ? new Date(options.to) : undefined,
+  });
+  return exportReceipts(receipts, { format: options.format, redact: options.redact });
+}
+
+/**
+ * `bolthub receipts verify`: run the offline checks (sha256(preimage) ==
+ * payment_hash == the hash the BOLT11 commits to; amount consistency) on
+ * every receipt in the ledger. Returns the summary text and whether every
+ * receipt held up (redacted receipts don't fail the run; they're expense
+ * records by design).
+ */
+export function receiptsVerify(options: { file?: string }): { text: string; ok: boolean } {
+  const store = new FileReceiptStore(options.file);
+  const receipts = store.list();
+  if (receipts.length === 0) {
+    return { text: "No receipts to verify.", ok: true };
+  }
+  const counts = { valid: 0, redacted: 0, invalid: 0, unverifiable: 0 };
+  const failures: string[] = [];
+  receipts.forEach((r, idx) => {
+    const result = verifyReceipt(r);
+    counts[result.status]++;
+    if (result.status === "invalid" || result.status === "unverifiable") {
+      failures.push(
+        `#${idx + 1} ${r.ts} ${r.method} ${r.resource} (${r.amount_sats} sats): ${result.reasons.join("; ")}`,
+      );
+    }
+  });
+  const lines = [
+    `${receipts.length} receipt(s): ${counts.valid} valid, ${counts.redacted} redacted, ${counts.invalid} invalid, ${counts.unverifiable} unverifiable`,
+  ];
+  if (failures.length > 0) lines.push("", ...failures);
+  return { text: lines.join("\n"), ok: counts.invalid === 0 && counts.unverifiable === 0 };
+}
+
 function printUsage(): void {
   console.log(`bolthub — CLI for the bolthub L402 API marketplace
 
@@ -254,12 +307,21 @@ Usage:
   bolthub search --tag <tag>          Search APIs by tag
   bolthub info <slug>                 Get full details for an API
   bolthub call <slug> <path>          Call an API endpoint
+  bolthub receipts export             Export the payment receipt ledger
+  bolthub receipts verify             Verify every receipt offline (proof-of-payment)
 
 Options for call:
   --method <METHOD>       HTTP method (default: GET)
   --max-cost <sats>       Refuse invoices above this amount
   --budget <sats>         Total session spending limit
   --body <json>           JSON request body (for POST/PUT/PATCH)
+
+Options for receipts export:
+  --format <json|csv>     Output format (default: json)
+  --redact                Strip preimages (shareable expense report)
+  --from <ISO date>       Only receipts at or after this time
+  --to <ISO date>         Only receipts at or before this time
+  --file <path>           Ledger path (default: ~/.bolthub/receipts.jsonl)
 
 Environment:
   PHOENIXD_URL + PHOENIXD_PASSWORD     Recommended wallet
@@ -323,6 +385,40 @@ async function main(): Promise<void> {
     }
 
     return call(slug, path, options);
+  }
+
+  if (command === "receipts") {
+    const sub = args[1];
+    if (sub === "verify") {
+      let file: string | undefined;
+      for (let i = 2; i < args.length; i++) {
+        if (args[i] === "--file" && args[i + 1]) file = args[++i];
+      }
+      const { text, ok } = receiptsVerify({ file });
+      console.log(text);
+      if (!ok) process.exit(1);
+      return;
+    }
+    if (sub !== "export") {
+      console.error("Usage: bolthub receipts <export|verify> [options]");
+      process.exit(1);
+    }
+    const options: { file?: string; format?: "json" | "csv"; redact?: boolean; from?: string; to?: string } = {};
+    for (let i = 2; i < args.length; i++) {
+      if (args[i] === "--format" && args[i + 1]) {
+        const fmt = args[++i];
+        if (fmt !== "json" && fmt !== "csv") {
+          console.error(`Unknown format: ${fmt} (json|csv)`);
+          process.exit(1);
+        }
+        options.format = fmt;
+      } else if (args[i] === "--redact") options.redact = true;
+      else if (args[i] === "--from" && args[i + 1]) options.from = args[++i];
+      else if (args[i] === "--to" && args[i + 1]) options.to = args[++i];
+      else if (args[i] === "--file" && args[i + 1]) options.file = args[++i];
+    }
+    console.log(receiptsExport(options));
+    return;
   }
 
   console.error(`Unknown command: ${command}`);

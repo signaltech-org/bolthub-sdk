@@ -66,15 +66,26 @@ export {
   L402BudgetError,
   L402TimeoutError,
   L402PaymentError,
+  UpstreamFailedError,
 } from "./http/client";
 export type {
   WalletAdapter,
   L402ClientOptions,
   L402Challenge,
   L402RequestOptions,
+  PaidInfo,
 } from "./http/types";
+export { readPaymentStatus, PAYMENT_HEADER, PAYMENT_CODE_HEADER } from "./http/payment-status";
+export type { PaymentStatus, PaymentState, PaymentCode } from "./http/payment-status";
 export { FileSessionStore } from "./http/session-store";
 export type { SessionStore, SessionData } from "./http/session-store";
+export { FileReceiptStore, InMemoryReceiptStore, completeReceipt } from "./http/receipt-store";
+export type { Receipt, ReceiptStore } from "./http/receipt-store";
+export { exportReceipts } from "./http/receipt-export";
+export type { ExportReceiptsOptions } from "./http/receipt-export";
+export { verifyReceipt } from "./http/receipt-verify";
+export type { ReceiptVerifyResult } from "./http/receipt-verify";
+export { bolt11PaymentHash } from "./http/bolt11-hash";
 export { attenuate } from "./http/delegate";
 export type { AttenuateOptions } from "./http/delegate";
 

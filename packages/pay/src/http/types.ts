@@ -35,8 +35,14 @@ export interface L402ClientOptions {
    */
   budget?: import("../budget").Budget;
 
-  /** Called after a successful invoice payment, before the retried request. */
-  onPaid?: (info: { scheme: "l402"; amount: number; asset: "sat"; resource: string }) => void;
+  /**
+   * Called after a successful invoice payment, before the retried request.
+   * `preimage` (hex proof of payment) and `invoice` (the paid BOLT11) are
+   * always populated on payment; `paymentHash` when the 402 body carried
+   * it (bolthub gateways do) — otherwise derive it as sha256(preimage).
+   * Together they form a verifiable receipt for the payment.
+   */
+  onPaid?: (info: PaidInfo) => void;
 
   /**
    * Policy when an invoice's price cannot be determined from the body
@@ -83,6 +89,32 @@ export interface L402ClientOptions {
    */
   maxRetryAfterMs?: number;
 
+  /**
+   * Automatic free retries when the gateway reports an upstream failure it
+   * already un-charged (`X-Bolthub-Payment-Code: upstream_failed_retryable`
+   * — the preimage redeems again / the deduction went back to the session
+   * balance). Strictly signal-gated: a bare 5xx without the header is
+   * returned untouched, because without the gateway's word the SDK cannot
+   * know the payment survived. Defaults to true; set false to opt out.
+   */
+  retryOnUpstreamFailure?: boolean;
+
+  /**
+   * How many free retries to attempt on `upstream_failed_retryable`
+   * responses, with jittered exponential backoff (250ms, 500ms, …).
+   * Defaults to 2; set 0 to disable (equivalent to
+   * `retryOnUpstreamFailure: false`).
+   */
+  upstreamRetries?: number;
+
+  /**
+   * When true, an `upstream_failed_retryable` response that survives all
+   * retries throws {@link UpstreamFailedError} (which carries the parsed
+   * payment status) instead of returning the failed `Response`. Defaults to
+   * false to preserve the return-the-response contract.
+   */
+  throwOnUpstreamFailure?: boolean;
+
   /** Optional callback invoked when the request transitions between L402 stages. */
   onStage?: (stage: "invoice" | "paying" | "loading") => void;
 
@@ -91,12 +123,40 @@ export interface L402ClientOptions {
    * Defaults to an in-memory store. Use {@link FileSessionStore} for disk persistence.
    */
   sessionStore?: import("./session-store").SessionStore;
+
+  /**
+   * Opt-in sink for preimage receipts: one record per settled payment
+   * (schema v1: ts, resource, method, amount, payment hash, preimage,
+   * invoice, outcome). Nothing is recorded when unset. Use
+   * {@link FileReceiptStore} for a persistent `~/.bolthub/receipts.jsonl`
+   * ledger. Receipt files carry live preimages; treat them like
+   * credentials.
+   */
+  receiptStore?: import("./receipt-store").ReceiptStore;
 }
 
 /** Parsed L402 challenge extracted from a `WWW-Authenticate` header. */
 export interface L402Challenge {
   macaroon: string;
   invoice: string;
+}
+
+/**
+ * Payload passed to `onPaid` callbacks. The receipt fields (`preimage`,
+ * `invoice`, `paymentHash`) are additive as of 0.4.x: older callbacks that
+ * only read `amount`/`resource` keep working unchanged.
+ */
+export interface PaidInfo {
+  scheme: "l402";
+  amount: number;
+  asset: "sat";
+  resource: string;
+  /** Hex proof of payment returned by the wallet. */
+  preimage?: string;
+  /** The BOLT11 invoice that was paid. */
+  invoice?: string;
+  /** From the 402 body when present; equals sha256(preimage). */
+  paymentHash?: string;
 }
 
 /** Extended `RequestInit` that adds query-parameter helpers to every request. */
@@ -114,7 +174,8 @@ export interface L402RequestOptions extends RequestInit {
    * Per-request payment callback, fired in addition to the client-level
    * `onPaid`. Lets callers attribute an exact cost to this call — reading
    * `totalSpent` deltas instead is racy when a shared {@link import("../budget").Budget}
-   * has other concurrent spenders.
+   * has other concurrent spenders. Receives the same receipt fields as the
+   * client-level callback ({@link PaidInfo}).
    */
-  onPaid?: (info: { scheme: "l402"; amount: number; asset: "sat"; resource: string }) => void;
+  onPaid?: (info: PaidInfo) => void;
 }

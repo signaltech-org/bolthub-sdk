@@ -68,6 +68,57 @@ describe("Budget", () => {
     b.reserve("sat", 60);
     expect(() => b.reserve("sat", 60)).toThrow(PaymentBudgetError);
   });
+
+  test("reserveTotal ignores the per-call cap but honors the total (delegation)", () => {
+    const b = new Budget({ maxTotal: { sat: 1000 }, maxPerCall: { sat: 100 } });
+    // A 300-sat delegated cap exceeds the 100 per-call ceiling but fits the total.
+    b.reserveTotal("sat", 300);
+    expect(b.spentFor("sat")).toBe(300);
+    b.reserveTotal("sat", 700); // now exactly at 1000
+    expect(b.remainingFor("sat")).toBe(0);
+    // Boundary: == remaining accepted (above), remaining + 1 refused.
+    expect(() => b.reserveTotal("sat", 1)).toThrow(PaymentBudgetError);
+    expect(b.spentFor("sat")).toBe(1000); // failed reserve counts nothing
+  });
+
+  test("reserveTotal rejects non-positive amounts", () => {
+    const b = new Budget({ maxTotal: { sat: 100 } });
+    expect(() => b.reserveTotal("sat", 0)).toThrow(PaymentBudgetError);
+    expect(() => b.reserveTotal("sat", -5)).toThrow(PaymentBudgetError);
+  });
+});
+
+describe("L402Client delegated-cap interlock (AF-D6)", () => {
+  const wallet: WalletAdapter = { payInvoice: async () => ({ preimage: "beef" }) };
+
+  test("reserves against an external shared Budget: == remaining accepted, +1 refused", () => {
+    const budget = new Budget({ maxTotal: { sat: 1000 } });
+    const client = new L402Client({ wallet, budget });
+    client.reserveDelegatedCap(1000); // exactly the remaining budget
+    expect(client.remainingBudget).toBe(0);
+    expect(() => client.reserveDelegatedCap(1)).toThrow(L402BudgetError);
+  });
+
+  test("reserves against internal budgetSats and rolls back", () => {
+    const client = new L402Client({ wallet, budgetSats: 500 });
+    client.reserveDelegatedCap(300);
+    expect(client.remainingBudget).toBe(200);
+    expect(() => client.reserveDelegatedCap(201)).toThrow(L402BudgetError);
+    client.rollbackDelegatedCap(300);
+    expect(client.remainingBudget).toBe(500);
+  });
+
+  test("no budget configured → reserve is a no-op (unlimited)", () => {
+    const client = new L402Client({ wallet });
+    expect(() => client.reserveDelegatedCap(1_000_000)).not.toThrow();
+    expect(client.remainingBudget).toBe(Infinity);
+  });
+
+  test("rejects a non-positive cap", () => {
+    const client = new L402Client({ wallet, budgetSats: 500 });
+    expect(() => client.reserveDelegatedCap(0)).toThrow();
+    expect(() => client.reserveDelegatedCap(-5)).toThrow();
+  });
 });
 
 describe("shared Budget across ToolClient and L402Client", () => {

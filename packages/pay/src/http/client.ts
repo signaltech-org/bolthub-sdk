@@ -1,10 +1,19 @@
 import type { L402ClientOptions, L402Challenge, L402RequestOptions, WalletAdapter } from "./types";
 import type { SessionStore, SessionData } from "./session-store";
+import type { ReceiptStore } from "./receipt-store";
+import { exportReceipts } from "./receipt-export";
 import type { Budget } from "../budget";
 import { bolt11AmountSats } from "./invoice";
+import { readPaymentStatus, type PaymentStatus } from "./payment-status";
 
 /** Lifecycle stage reported via {@link L402ClientOptions.onStage}. */
 export type L402Stage = "invoice" | "paying" | "loading";
+
+// How long a bought bundle credential is presented before the client stops
+// trying it. Matches the gateway's 30-day bundle-macaroon TTL; the gateway's
+// 402 (bundle spent/expired) is the authoritative invalidation, this is just
+// a client-side floor so a definitely-dead credential isn't re-sent forever.
+const BUNDLE_CREDENTIAL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Snapshot of a cached session token returned by {@link L402Client.getSessions}. */
 interface SessionInfo {
@@ -58,10 +67,18 @@ export class L402Client {
   private payRetries: number;
   private rateLimitRetries: number;
   private maxRetryAfterMs: number;
+  private retryOnUpstreamFailure: boolean;
+  private upstreamRetries: number;
+  private throwOnUpstreamFailure: boolean;
   private spentSats = 0;
   private onStage?: (stage: L402Stage) => void;
   private onPaid?: L402ClientOptions["onPaid"];
   private store: SessionStore;
+  private receiptStore?: ReceiptStore;
+  // Prepaid-bundle credentials by host+path: after buyBundle pays once, its
+  // (macaroon:preimage) proof is presented on each subsequent request to burn
+  // a use instead of paying again, until the gateway 402s (bundle exhausted).
+  private bundleStore = new Map<string, { macaroon: string; preimage: string; expiresAt: number }>();
 
   constructor(options: L402ClientOptions) {
     if (options.budget && options.budgetSats !== undefined) {
@@ -77,9 +94,13 @@ export class L402Client {
     this.payRetries = options.payRetries ?? 2;
     this.rateLimitRetries = options.rateLimitRetries ?? 2;
     this.maxRetryAfterMs = options.maxRetryAfterMs ?? 10_000;
+    this.retryOnUpstreamFailure = options.retryOnUpstreamFailure ?? true;
+    this.upstreamRetries = options.upstreamRetries ?? 2;
+    this.throwOnUpstreamFailure = options.throwOnUpstreamFailure ?? false;
     this.onStage = options.onStage;
     this.onPaid = options.onPaid;
     this.store = options.sessionStore ?? new InMemorySessionStore();
+    this.receiptStore = options.receiptStore;
   }
 
   /**
@@ -97,6 +118,43 @@ export class L402Client {
       : Math.max(0, this.budgetSats - this.spentSats);
   }
 
+  /**
+   * Reserve `sats` from this client's budget for a delegated child credential
+   * (AF-D6). The child is spent by a different process, so the only way the
+   * parent can keep parent + children from jointly exceeding its budget is to
+   * hold the child's cap now (SPIKE-6 reserve semantics). Throws
+   * {@link L402BudgetError} when the cap exceeds the remaining budget (boundary:
+   * `== remaining` accepted, `remaining + 1` refused). Return it with
+   * {@link rollbackDelegatedCap} on the child's revocation or expiry. When no
+   * budget is configured (unlimited), this is a no-op.
+   */
+  reserveDelegatedCap(sats: number): void {
+    if (!Number.isInteger(sats) || sats <= 0) {
+      throw new L402Error("reserveDelegatedCap: sats must be a positive integer");
+    }
+    if (this.budget) {
+      try {
+        this.budget.reserveTotal("sat", sats);
+      } catch (err) {
+        throw new L402BudgetError(err instanceof Error ? err.message : String(err));
+      }
+    } else if (this.budgetSats !== Infinity) {
+      if (this.spentSats + sats > this.budgetSats) {
+        throw new L402BudgetError(
+          `Delegated cap ${sats} sats exceeds remaining budget ${this.remainingBudget}`,
+        );
+      }
+      this.spentSats += sats;
+    }
+  }
+
+  /** Return a delegated-cap reservation to the budget (child revoked/expired). */
+  rollbackDelegatedCap(sats: number): void {
+    if (!Number.isInteger(sats) || sats <= 0) return;
+    if (this.budget) this.budget.rollback("sat", sats);
+    else if (this.budgetSats !== Infinity) this.spentSats = Math.max(0, this.spentSats - sats);
+  }
+
   /** Return a snapshot of all cached session tokens. */
   getSessions(): Map<string, SessionInfo> {
     return new Map(this.store.entries());
@@ -107,6 +165,24 @@ export class L402Client {
     this.store.clear();
   }
 
+  /**
+   * Serialize this client's payment receipts (requires a configured
+   * `receiptStore`). JSON by default; CSV per the receipt schema's column
+   * order; `redact` strips preimages for shareable expense reports.
+   * Throws {@link L402Error} when no receipt store was configured.
+   */
+  exportReceipts(opts: { from?: Date; to?: Date; format?: "json" | "csv"; redact?: boolean } = {}): string {
+    if (!this.receiptStore) {
+      throw new L402Error(
+        "exportReceipts: no receiptStore configured — pass one (e.g. new FileReceiptStore()) to the L402Client constructor",
+      );
+    }
+    return exportReceipts(this.receiptStore.list({ from: opts.from, to: opts.to }), {
+      format: opts.format,
+      redact: opts.redact,
+    });
+  }
+
   /** Convenience wrapper around {@link request} with `method: "GET"`. */
   async get(url: string, options?: L402RequestOptions): Promise<Response> {
     return this.request(url, { ...options, method: "GET" });
@@ -115,6 +191,127 @@ export class L402Client {
   /** Convenience wrapper around {@link request} with `method: "POST"`. */
   async post(url: string, options?: L402RequestOptions): Promise<Response> {
     return this.request(url, { ...options, method: "POST" });
+  }
+
+  /** Drop all cached bundle credentials. */
+  clearBundles(): void {
+    this.bundleStore.clear();
+  }
+
+  /**
+   * Drop the cached bundle credential for one endpoint (e.g. after revoking its
+   * grant, so the client stops presenting a dead token). Returns true if one
+   * was cached.
+   */
+  dropBundleCredential(url: string, params?: Record<string, string>): boolean {
+    let finalUrl = url;
+    if (params) finalUrl = `${url}?${new URLSearchParams(params).toString()}`;
+    return this.bundleStore.delete(this.getSessionKey(finalUrl));
+  }
+
+  /**
+   * Return the active prepaid-bundle credential cached for `url`
+   * (`{ macaroon, preimage }`), or `undefined` if none is cached or it has
+   * expired. This is the multi-use L402 credential a caller can delegate: hand
+   * `macaroon` to {@link attenuate} to mint a scoped child, then give the child
+   * macaroon plus this same `preimage` to a sub-agent. A single-payment
+   * per_request credential is spent in the same request it's minted, so there
+   * is nothing cached to delegate — buy a bundle first.
+   */
+  getBundleCredential(url: string, params?: Record<string, string>): { macaroon: string; preimage: string } | undefined {
+    let finalUrl = url;
+    if (params) finalUrl = `${url}?${new URLSearchParams(params).toString()}`;
+    const bundle = this.bundleStore.get(this.getSessionKey(finalUrl));
+    if (!bundle) return undefined;
+    if (bundle.expiresAt <= Date.now()) {
+      this.bundleStore.delete(this.getSessionKey(finalUrl));
+      return undefined;
+    }
+    return { macaroon: bundle.macaroon, preimage: bundle.preimage };
+  }
+
+  /**
+   * Buy a prepaid bundle: pay once for a `uses`-request credential on a
+   * bundles-enabled endpoint, then subsequent {@link request} calls to that
+   * endpoint burn a use instead of paying (until the bundle is spent).
+   *
+   * Sends an `X-Bolthub-Bundle: <uses>` request, pays the bundle invoice
+   * (enforcing the budget and `maxCostSats` exactly like a normal payment),
+   * and caches the credential. Throws {@link L402Error} if the endpoint did
+   * not answer with a bundle challenge (e.g. bundles aren't enabled there, or
+   * the size isn't offered — the server's message is included).
+   */
+  async buyBundle(
+    url: string,
+    uses: number,
+    options: L402RequestOptions = {},
+  ): Promise<{ uses: number; resource: string }> {
+    if (!Number.isInteger(uses) || uses <= 0) {
+      throw new L402Error("buyBundle: uses must be a positive integer");
+    }
+    const { params, maxCostSats, onPaid, ...fetchOptions } = options;
+    let finalUrl = url;
+    if (params) finalUrl = `${url}?${new URLSearchParams(params).toString()}`;
+
+    const headers = new Headers(fetchOptions.headers);
+    headers.set("X-Bolthub-Bundle", String(uses));
+
+    this.onStage?.("invoice");
+    const challengeResp = await this.fetchRetrying429(
+      () => fetch(finalUrl, { ...fetchOptions, headers, signal: AbortSignal.timeout(this.timeoutMs) }),
+      fetchOptions.body,
+    );
+    if (challengeResp.status !== 402) {
+      // A bundles-disabled endpoint answers 200/other with the header ignored;
+      // a bad size answers 400 with a message naming the available sizes.
+      let detail = "";
+      try {
+        detail = ((await challengeResp.clone().json()) as { error?: string })?.error ?? "";
+      } catch {
+        /* non-JSON body */
+      }
+      throw new L402Error(
+        `buyBundle: endpoint did not offer this bundle (HTTP ${challengeResp.status}${detail ? `: ${detail}` : ""})`,
+      );
+    }
+
+    const challenge = this.parseChallenge(challengeResp);
+    if (!challenge) throw new L402Error("buyBundle: failed to parse the bundle challenge");
+
+    const amount = await this.extractAmount(challengeResp, challenge.invoice);
+    const charge = this.resolveCharge(amount, maxCostSats);
+    this.reserveCharge(charge);
+
+    this.onStage?.("paying");
+    let preimage: string;
+    try {
+      ({ preimage } = await this.payInvoiceWithRetry(challenge.invoice));
+    } catch (err) {
+      this.rollbackCharge(charge);
+      throw new L402PaymentError(err instanceof Error ? err.message : "Payment failed", { cause: err });
+    }
+
+    this.bundleStore.set(this.getSessionKey(finalUrl), {
+      macaroon: challenge.macaroon,
+      preimage,
+      expiresAt: Date.now() + BUNDLE_CREDENTIAL_TTL_MS,
+    });
+
+    const paidInfo = {
+      scheme: "l402" as const,
+      amount: charge,
+      asset: "sat" as const,
+      resource: finalUrl,
+      preimage,
+      invoice: challenge.invoice,
+      paymentHash: await this.extractPaymentHash(challengeResp),
+    };
+    this.onPaid?.(paidInfo);
+    onPaid?.(paidInfo);
+    this.recordReceipt(paidInfo, fetchOptions.method, challengeResp);
+    this.onStage?.("loading");
+
+    return { uses, resource: finalUrl };
   }
 
   /**
@@ -135,6 +332,33 @@ export class L402Client {
     }
 
     const sessionKey = this.getSessionKey(finalUrl);
+
+    // Prepaid bundle: if a bundle credential is cached for this endpoint,
+    // present it (burns a use, no payment). A 402 means the bundle is spent —
+    // drop it and fall through to the normal flow (which may re-buy or pay
+    // single-use).
+    const bundle = this.bundleStore.get(sessionKey);
+    if (bundle && bundle.expiresAt > Date.now()) {
+      const headers = new Headers(fetchOptions.headers);
+      headers.set("Authorization", `L402 ${bundle.macaroon}:${bundle.preimage}`);
+      try {
+        const resp = await this.fetchRetryingUpstream(
+          () => fetch(finalUrl, { ...fetchOptions, headers, signal: AbortSignal.timeout(this.timeoutMs) }),
+          fetchOptions.body,
+          finalUrl,
+        );
+        if (resp.status !== 402) return resp;
+        this.bundleStore.delete(sessionKey);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "TimeoutError") {
+          throw new L402TimeoutError("Request timed out");
+        }
+        throw err;
+      }
+    } else if (bundle) {
+      this.bundleStore.delete(sessionKey); // expired
+    }
+
     const existingSession = this.store.get(sessionKey);
 
     if (existingSession && existingSession.expiresAt > Date.now()) {
@@ -142,7 +366,7 @@ export class L402Client {
       headers.set("X-Session-Token", existingSession.token);
 
       try {
-        const resp = await this.fetchRetrying429(
+        const resp = await this.fetchRetryingUpstream(
           () =>
             fetch(finalUrl, {
               ...fetchOptions,
@@ -150,6 +374,7 @@ export class L402Client {
               signal: AbortSignal.timeout(this.timeoutMs),
             }),
           fetchOptions.body,
+          finalUrl,
         );
 
         if (resp.status !== 402) {
@@ -216,7 +441,15 @@ export class L402Client {
       );
     }
 
-    const paidInfo = { scheme: "l402" as const, amount: charge, asset: "sat" as const, resource: finalUrl };
+    const paidInfo = {
+      scheme: "l402" as const,
+      amount: charge,
+      asset: "sat" as const,
+      resource: finalUrl,
+      preimage,
+      invoice: challenge.invoice,
+      paymentHash: await this.extractPaymentHash(resp),
+    };
     this.onPaid?.(paidInfo);
     onPaid?.(paidInfo);
     this.onStage?.("loading");
@@ -227,8 +460,9 @@ export class L402Client {
     try {
       // A 429 here is retried with the SAME L402 proof: the gateway
       // reverts the invoice consumption when it answers 429, so the
-      // retry re-uses the payment already made above.
-      const authedResp = await this.fetchRetrying429(
+      // retry re-uses the payment already made above. The same holds for
+      // origin failures the gateway reports as upstream_failed_retryable.
+      const authedResp = await this.fetchRetryingUpstream(
         () =>
           fetch(finalUrl, {
             ...fetchOptions,
@@ -236,9 +470,11 @@ export class L402Client {
             signal: AbortSignal.timeout(this.timeoutMs),
           }),
         fetchOptions.body,
+        finalUrl,
       );
 
       this.updateSessionFromResponse(sessionKey, authedResp);
+      this.recordReceipt(paidInfo, fetchOptions.method, authedResp);
 
       return authedResp;
     } catch (err) {
@@ -277,6 +513,48 @@ export class L402Client {
       if (waitMs > this.maxRetryAfterMs) return resp;
       await new Promise((r) => setTimeout(r, waitMs));
       resp = await doFetch();
+    }
+    return resp;
+  }
+
+  /**
+   * Run a credentialed fetch (429-aware via {@link fetchRetrying429}),
+   * then wait out gateway-signaled upstream failures. When the response
+   * carries `X-Bolthub-Payment-Code: upstream_failed_retryable` the
+   * payment layer already un-charged the request — the held credential
+   * re-redeems for free — so the identical request is re-sent with
+   * jittered backoff (250ms, 500ms, …), up to `upstreamRetries` times.
+   * Strictly signal-gated: a bare 5xx without the header is returned
+   * untouched. Stream bodies are never retried (not re-readable).
+   */
+  private async fetchRetryingUpstream(
+    doFetch: () => Promise<Response>,
+    body: BodyInit | null | undefined,
+    resource: string,
+  ): Promise<Response> {
+    let resp = await this.fetchRetrying429(doFetch, body);
+    let attempts = 1;
+    const active =
+      this.retryOnUpstreamFailure && this.upstreamRetries > 0 && !(body instanceof ReadableStream);
+    if (active) {
+      for (let attempt = 1; attempt <= this.upstreamRetries; attempt++) {
+        if (readPaymentStatus(resp.headers)?.code !== "upstream_failed_retryable") break;
+        await new Promise((r) =>
+          setTimeout(r, 250 * 2 ** (attempt - 1) + Math.random() * 100),
+        );
+        resp = await this.fetchRetrying429(doFetch, body);
+        attempts++;
+      }
+    }
+    if (this.throwOnUpstreamFailure) {
+      const status = readPaymentStatus(resp.headers);
+      if (status?.code === "upstream_failed_retryable") {
+        throw new UpstreamFailedError(
+          `Upstream failed (HTTP ${resp.status}) after ${attempts} attempt(s); ` +
+            `payment ${status.state} — retrying later is free`,
+          { paymentStatus: status, httpStatus: resp.status, attempts, resource },
+        );
+      }
     }
     return resp;
   }
@@ -340,15 +618,65 @@ export class L402Client {
     const wwwAuth = resp.headers.get("WWW-Authenticate");
     if (!wwwAuth) return null;
 
-    const macaroonMatch = wwwAuth.match(/macaroon="([^"]+)"/);
+    // Accept both the historical `macaroon=` field and the token-agnostic
+    // `token=` the L402 spec is renaming toward (bLIP-0026). `macaroon=`
+    // wins when both are present, so today's gateways behave identically;
+    // `token=` is a forward-compatible fallback. The credential is opaque
+    // either way (parsed out and echoed back in the Authorization header).
+    const credentialMatch =
+      wwwAuth.match(/macaroon="([^"]+)"/) ?? wwwAuth.match(/\btoken="([^"]+)"/);
     const invoiceMatch = wwwAuth.match(/invoice="([^"]+)"/);
 
-    if (!macaroonMatch || !invoiceMatch) return null;
+    if (!credentialMatch || !invoiceMatch) return null;
 
     return {
-      macaroon: macaroonMatch[1],
+      macaroon: credentialMatch[1],
       invoice: invoiceMatch[1],
     };
+  }
+
+  /**
+   * Record one receipt per settled payment (opt-in: no store, no write).
+   * `outcome` is the gateway's X-Bolthub-Payment header when emitted; the
+   * store fills payment_hash from the preimage when the 402 body lacked it.
+   * A store failure is surfaced as a warning, never as a failed request:
+   * the paid call already succeeded.
+   */
+  private recordReceipt(
+    paidInfo: { amount: number; resource: string; preimage?: string; invoice?: string; paymentHash?: string },
+    method: string | undefined,
+    resp: Response,
+  ): void {
+    if (!this.receiptStore) return;
+    try {
+      this.receiptStore.append({
+        receipt_v: 1,
+        ts: new Date().toISOString(),
+        resource: paidInfo.resource,
+        method: (method ?? "GET").toUpperCase(),
+        amount_sats: paidInfo.amount,
+        payment_hash: paidInfo.paymentHash ?? "",
+        preimage: paidInfo.preimage ?? "",
+        invoice: paidInfo.invoice ?? "",
+        outcome: resp.headers.get("X-Bolthub-Payment") ?? "unknown",
+      });
+    } catch (err) {
+      console.error(`bolthub: failed to record payment receipt: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /**
+   * Read the payment hash from the 402 body (`paymentHash`, present on
+   * bolthub gateways). Optional receipt metadata: callers can always derive
+   * it as sha256(preimage) when absent.
+   */
+  private async extractPaymentHash(resp: Response): Promise<string | undefined> {
+    try {
+      const hash = ((await resp.clone().json()) as { paymentHash?: unknown })?.paymentHash;
+      return typeof hash === "string" && hash.length > 0 ? hash : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -494,5 +822,31 @@ export class L402PaymentError extends L402Error {
     super(message);
     this.name = "L402PaymentError";
     this.cause = options?.cause;
+  }
+}
+
+/**
+ * Thrown (opt-in via `throwOnUpstreamFailure`) when the origin kept
+ * failing after payment and all free retries were exhausted. The gateway
+ * already un-charged the request — `paymentStatus` says how (invoice
+ * reverted or deduction refunded) — so retrying later costs nothing;
+ * `retryable` is always true for this error.
+ */
+export class UpstreamFailedError extends L402Error {
+  public readonly retryable = true;
+  public readonly paymentStatus: PaymentStatus;
+  public readonly httpStatus: number;
+  public readonly attempts: number;
+  public readonly resource: string;
+  constructor(
+    message: string,
+    details: { paymentStatus: PaymentStatus; httpStatus: number; attempts: number; resource: string },
+  ) {
+    super(message);
+    this.name = "UpstreamFailedError";
+    this.paymentStatus = details.paymentStatus;
+    this.httpStatus = details.httpStatus;
+    this.attempts = details.attempts;
+    this.resource = details.resource;
   }
 }

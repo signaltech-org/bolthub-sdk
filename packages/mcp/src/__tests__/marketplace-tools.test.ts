@@ -1,5 +1,5 @@
-import { describe, test, expect, mock } from "bun:test";
-import { handleSearchApis, handleGetApiDetails, handlePreviewCost, handleCallApi } from "../sources/marketplace-tools";
+import { describe, test, expect, mock, afterEach } from "bun:test";
+import { handleSearchApis, handleGetApiDetails, handlePreviewCost, handleCallApi, handleBuyBundle, handleMintScopedToken, handleRevokeToken } from "../sources/marketplace-tools";
 import type { ApiClient, DirectoryEntry } from "../sources/api-client";
 import type { L402Client } from "@bolthub/pay";
 
@@ -214,6 +214,92 @@ describe("handleCallApi", () => {
     expect(result.content[0].text).toContain("Connection refused");
   });
 
+  test("annotates reverted payments so agents know the retry is free", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      request: mock(async () =>
+        new Response("upstream down", {
+          status: 502,
+          headers: {
+            "X-Bolthub-Payment": "reverted",
+            "X-Bolthub-Payment-Code": "upstream_failed_retryable",
+          },
+        }),
+      ),
+    } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/data" },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Payment: reverted");
+    expect(result.content[0].text).toContain("free");
+  });
+
+  test("annotates refunded_to_balance on session-model failures", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      request: mock(async () =>
+        new Response("upstream down", {
+          status: 500,
+          headers: {
+            "X-Bolthub-Payment": "refunded_to_balance",
+            "X-Bolthub-Payment-Code": "upstream_failed_retryable",
+          },
+        }),
+      ),
+    } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/data" },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.content[0].text).toContain("Payment: refunded to session balance");
+  });
+
+  test("annotates charged 4xx answers as staying paid", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      request: mock(async () =>
+        new Response("bad request", {
+          status: 400,
+          headers: {
+            "X-Bolthub-Payment": "charged",
+            "X-Bolthub-Payment-Code": "upstream_rejected",
+          },
+        }),
+      ),
+    } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/data" },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.content[0].text).toContain("Payment: charged (4xx answers are real responses and stay paid)");
+  });
+
+  test("no payment line when the gateway does not emit the headers", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      request: mock(async () => new Response("bad request", { status: 400 })),
+    } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/data" },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.content[0].text).not.toContain("Payment:");
+  });
+
   test("appends cost when sats are spent", async () => {
     let spent = 0;
     const apiClient = makeApiClient();
@@ -255,5 +341,260 @@ describe("handleCallApi", () => {
     );
 
     expect(capturedUrl).toContain("city=berlin");
+  });
+});
+
+describe("handleBuyBundle", () => {
+  test("buys a bundle and reports the cost + reuse hint", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      buyBundle: mock(async (_url: string, uses: number, opts: { onPaid?: (i: { amount: number }) => void }) => {
+        opts.onPaid?.({ amount: 8000 });
+        return { uses, resource: "https://test-api.gw.bolthub.ai/v1/data" };
+      }),
+    } as any);
+
+    const result = await handleBuyBundle(
+      { slug: "test-api", path: "/v1/data", uses: 100 },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("100-use bundle");
+    expect(result.content[0].text).toContain("Cost: 8000 sats");
+    expect(result.content[0].text).toContain("no new payment");
+  });
+
+  test("surfaces the server error (e.g. bad size) as an error result", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      buyBundle: mock(async () => {
+        throw new Error("buyBundle: endpoint did not offer this bundle (HTTP 400: No 250-use bundle. Available sizes: 100, 500)");
+      }),
+    } as any);
+
+    const result = await handleBuyBundle(
+      { slug: "test-api", path: "/v1/data", uses: 250 },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Available sizes: 100, 500");
+  });
+
+  test("errors when no wallet is configured", async () => {
+    const apiClient = makeApiClient();
+    const result = await handleBuyBundle(
+      { slug: "test-api", path: "/v1/data", uses: 100 },
+      apiClient,
+      undefined,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("requires a wallet");
+  });
+
+  test("passes max_cost_sats through to buyBundle", async () => {
+    const apiClient = makeApiClient();
+    let capturedOpts: { maxCostSats?: number } = {};
+    const l402Client = makeL402Client({
+      buyBundle: mock(async (_url: string, uses: number, opts: { maxCostSats?: number }) => {
+        capturedOpts = opts;
+        return { uses, resource: "u" };
+      }),
+    } as any);
+
+    await handleBuyBundle(
+      { slug: "test-api", path: "/v1/data", uses: 100, max_cost_sats: 5000 },
+      apiClient,
+      l402Client,
+    );
+    expect(capturedOpts.maxCostSats).toBe(5000);
+  });
+});
+
+// A real gateway macaroon (header + 4 binding caveats + signature), the value
+// attenuate() operates on. Same fixture as the @bolthub/pay delegate tests.
+const GATEWAY_MACAROON =
+  "AgEHYm9sdGh1YgJFeyJ2IjoxLCJraWQiOiIwNjZlYTZmNCIsInRpZCI6IjhlNDU5NzMxLTgwYWYtNGI4Mi1hODFkLTYyMjJlYjJjOTEyZSJ9AAJNcGF5bWVudF9oYXNoPTUxYjAxOWZkOWZkMTM5OTk1OWIzYWVkODI1NDlmMGZiYjFjN2E5Zjc5NmM5MGFjOWUwYzFiNmQwMmY2NzgyMjMAAi50ZW5hbnRfaWQ9OGU0NTk3MzEtODBhZi00YjgyLWE4MWQtNjIyMmViMmM5MTJlAAIwZW5kcG9pbnRfaWQ9ZWFjODZjMzYtYTgxOC00ODIyLTg2YzYtNDE0NDc3YTVmYzk2AAIYZXhwaXJlc19hdD0xNzgyNDc5NTgzMzY2AAAGIIBZfBD3S6tz8Gf4+vfShVH2hwfwB8vRR2swa4N3tAXC";
+
+describe("handleMintScopedToken", () => {
+  function clientHolding(cred?: { macaroon: string; preimage: string }): L402Client {
+    return makeL402Client({
+      getBundleCredential: mock(() => cred),
+      reserveDelegatedCap: mock(() => {}),
+      remainingBudget: 1000,
+    } as any);
+  }
+
+  test("attenuates the held bundle credential into a scoped child", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = clientHolding({ macaroon: GATEWAY_MACAROON, preimage: "beef" });
+
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", n_uses: 50, spend_cap_sats: 300 },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text as string;
+    expect(text).toContain("50 uses");
+    expect(text).toContain("≤ 300 sats");
+    // The child credential carries the SAME preimage and re-parses as L402.
+    const m = text.match(/L402 (\S+):beef/);
+    expect(m).not.toBeNull();
+    expect(() => atob(m![1])).not.toThrow();
+  });
+
+  test("errors when no bundle credential is held (buy_bundle first)", async () => {
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", n_uses: 10 },
+      makeApiClient(),
+      clientHolding(undefined),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("buy_bundle");
+  });
+
+  test("errors when no wallet is configured", async () => {
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", n_uses: 10 },
+      makeApiClient(),
+      undefined,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("requires a wallet");
+  });
+
+  test("requires at least one restriction", async () => {
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data" },
+      makeApiClient(),
+      clientHolding({ macaroon: GATEWAY_MACAROON, preimage: "beef" }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("restriction");
+  });
+
+  test("rejects an unparseable expiry", async () => {
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", expiry: "not-a-date" },
+      makeApiClient(),
+      clientHolding({ macaroon: GATEWAY_MACAROON, preimage: "beef" }),
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Invalid expiry");
+  });
+
+  // AF-D6: the mint reserves the child's spend_cap_sats from the parent budget.
+  test("reserves spend_cap_sats from the parent budget on a successful mint", async () => {
+    let reserved = 0;
+    const l402Client = makeL402Client({
+      getBundleCredential: mock(() => ({ macaroon: GATEWAY_MACAROON, preimage: "beef" })),
+      reserveDelegatedCap: mock((sats: number) => { reserved = sats; }),
+      remainingBudget: 700,
+    } as any);
+
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", spend_cap_sats: 300, n_uses: 50 },
+      makeApiClient(),
+      l402Client,
+    );
+    expect(result.isError).toBeUndefined();
+    expect(reserved).toBe(300);
+    expect(result.content[0].text).toContain("Reserved 300 sats");
+  });
+
+  test("refuses a child cap over the parent's remaining budget, minting nothing", async () => {
+    const l402Client = makeL402Client({
+      getBundleCredential: mock(() => ({ macaroon: GATEWAY_MACAROON, preimage: "beef" })),
+      reserveDelegatedCap: mock(() => { throw new Error("Delegated cap 1001 sats exceeds remaining budget 1000"); }),
+      remainingBudget: 1000,
+    } as any);
+
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", spend_cap_sats: 1001 },
+      makeApiClient(),
+      l402Client,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("exceeds your remaining budget");
+    expect(result.content[0].text).toContain("no token was minted");
+    expect(result.content[0].text).not.toContain("L402 "); // no credential leaked
+  });
+});
+
+describe("handleRevokeToken", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("posts the held credential to the gateway revoke endpoint and drops it locally", async () => {
+    let calledUrl = "";
+    let sentAuth: string | null = null;
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      calledUrl = url;
+      sentAuth = new Headers(init?.headers).get("Authorization");
+      return new Response(JSON.stringify({ revoked: true, code: "token_revoked" }), { status: 200 });
+    }) as any;
+
+    const dropped: string[] = [];
+    const l402Client = makeL402Client({
+      getBundleCredential: mock(() => ({ macaroon: "childmac", preimage: "beef" })),
+      dropBundleCredential: mock((u: string) => { dropped.push(u); return true; }),
+    } as any);
+
+    const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
+
+    expect(result.isError).toBeUndefined();
+    expect(calledUrl).toContain("/.well-known/l402/revoke");
+    expect(sentAuth).toBe("L402 childmac:beef");
+    expect(dropped).toHaveLength(1); // stopped presenting the dead token
+    expect(result.content[0].text).toContain("token_revoked");
+  });
+
+  test("returns reserved child budget when released_sats is given", async () => {
+    globalThis.fetch = mock(async () => new Response("{}", { status: 200 })) as any;
+    let rolledBack = 0;
+    const l402Client = makeL402Client({
+      getBundleCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
+      dropBundleCredential: mock(() => true),
+      rollbackDelegatedCap: mock((n: number) => { rolledBack = n; }),
+      remainingBudget: 800,
+    } as any);
+
+    const result = await handleRevokeToken(
+      { slug: "test-api", path: "/v1/data", released_sats: 300 },
+      makeApiClient(),
+      l402Client,
+    );
+    expect(rolledBack).toBe(300);
+    expect(result.content[0].text).toContain("Returned 300 sats");
+  });
+
+  test("errors when no credential is held for the endpoint", async () => {
+    const l402Client = makeL402Client({ getBundleCredential: mock(() => undefined) } as any);
+    const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("nothing to revoke");
+  });
+
+  test("surfaces a gateway error status", async () => {
+    globalThis.fetch = mock(async () => new Response("nope", { status: 404 })) as any;
+    const l402Client = makeL402Client({
+      getBundleCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
+    } as any);
+    const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("HTTP 404");
+  });
+
+  test("errors when no wallet is configured", async () => {
+    const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), undefined);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("requires a wallet");
   });
 });

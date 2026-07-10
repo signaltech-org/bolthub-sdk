@@ -54,6 +54,85 @@ describe("attenuate", () => {
     expect(() => atob(out)).not.toThrow();
   });
 
+  // --- Caveat schema v2 (AF-D3): n_uses / max_sats / path_prefix ---
+
+  // Mint a macaroon that already carries v2 caveats, to test tighten-only folds.
+  function mintWith(...caveats: string[]): string {
+    const m = macaroon.newMacaroon({
+      version: 2,
+      rootKey: new Uint8Array(32),
+      identifier: '{"v":1,"kid":"x","tid":"t1"}',
+      location: "bolthub",
+    });
+    m.addFirstPartyCaveat("payment_hash=abc");
+    for (const c of caveats) m.addFirstPartyCaveat(c);
+    return Buffer.from(m.exportBinary()).toString("base64");
+  }
+
+  test("appends n_uses, max_sats, and a normalized path_prefix", () => {
+    const out = attenuate(mint(), { nUses: 50, maxSats: 300, pathPrefix: "/v1/user/" });
+    const ids = caveatIds(out);
+    expect(ids).toContain("n_uses=50");
+    expect(ids).toContain("max_sats=300");
+    expect(ids).toContain("path_prefix=/v1/user"); // trailing slash normalized away
+  });
+
+  test("n_uses may only tighten (== ok, lower ok, higher throws)", () => {
+    expect(caveatIds(attenuate(mintWith("n_uses=100"), { nUses: 100 }))).toContain("n_uses=100");
+    expect(caveatIds(attenuate(mintWith("n_uses=100"), { nUses: 10 }))).toContain("n_uses=10");
+    expect(() => attenuate(mintWith("n_uses=100"), { nUses: 101 })).toThrow(/can only tighten/);
+  });
+
+  test("max_sats may only tighten", () => {
+    expect(caveatIds(attenuate(mintWith("max_sats=500"), { maxSats: 500 }))).toContain("max_sats=500");
+    expect(() => attenuate(mintWith("max_sats=500"), { maxSats: 501 })).toThrow(/can only tighten/);
+  });
+
+  test("path_prefix may only narrow: a child under the parent is ok, a sibling/parent is refused", () => {
+    // Under the parent prefix: allowed.
+    expect(caveatIds(attenuate(mintWith("path_prefix=/v1/user"), { pathPrefix: "/v1/user/42" }))).toContain(
+      "path_prefix=/v1/user/42",
+    );
+    // Exactly the parent: allowed (== is a tighten no-op).
+    expect(caveatIds(attenuate(mintWith("path_prefix=/v1/user"), { pathPrefix: "/v1/user" }))).toContain(
+      "path_prefix=/v1/user",
+    );
+    // A sibling path is not under the parent: refused.
+    expect(() => attenuate(mintWith("path_prefix=/v1/user"), { pathPrefix: "/v1/admin" })).toThrow(
+      /can only tighten/,
+    );
+    // Widening back to the root is refused (segment boundary: /v1/userdata is NOT under /v1/user either).
+    expect(() => attenuate(mintWith("path_prefix=/v1/user"), { pathPrefix: "/v1" })).toThrow(/can only tighten/);
+    expect(() => attenuate(mintWith("path_prefix=/v1/user"), { pathPrefix: "/v1/userdata" })).toThrow(
+      /can only tighten/,
+    );
+  });
+
+  test("validUntil may only move earlier", () => {
+    expect(caveatIds(attenuate(mintWith("valid_until=2000"), { validUntil: 1500 }))).toContain("valid_until=1500");
+    expect(() => attenuate(mintWith("valid_until=2000"), { validUntil: 2001 })).toThrow(/can only tighten/);
+  });
+
+  test("path_prefix normalization rejects traversal and interior //", () => {
+    expect(() => attenuate(mint(), { pathPrefix: "/v1/../admin" })).toThrow();
+    expect(() => attenuate(mint(), { pathPrefix: "/v1//user" })).toThrow();
+    expect(() => attenuate(mint(), { pathPrefix: "no-leading-slash" })).toThrow();
+  });
+
+  test("n_uses / max_sats reject non-positive, non-integer, and over-ceiling values", () => {
+    for (const bad of [0, -5, 1.5, 0x1_0000_0000]) {
+      expect(() => attenuate(mint(), { nUses: bad })).toThrow();
+      expect(() => attenuate(mint(), { maxSats: bad })).toThrow();
+    }
+  });
+
+  test("v2 caveats compose with method in one call", () => {
+    const ids = caveatIds(attenuate(mint(), { method: "GET", nUses: 5, pathPrefix: "/v1/data" }));
+    expect(ids).toContain("method=GET");
+    expect(ids).toContain("n_uses=5");
+    expect(ids).toContain("path_prefix=/v1/data");
+  });
+
   // Regression: a real gateway macaroon (4 binding caveats) used to throw
   // `RangeError: length too large` inside the bundled lib's exportBinary().
   test("attenuates a real 4-caveat gateway macaroon and preserves every caveat", () => {

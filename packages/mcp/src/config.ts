@@ -61,6 +61,12 @@ const configFileSchema = z
     maxPerCall: amountsSchema.optional(),
     namespace: z.enum(["prefix", "flat"]).optional(),
     telemetry: z.boolean().optional(),
+    /**
+     * Preimage receipt ledger: `true` = record to the default path
+     * (`~/.bolthub/receipts.jsonl`), a string = record to that path,
+     * absent/false = off (nothing is ever written).
+     */
+    receipts: z.union([z.boolean(), z.string().min(1)]).optional(),
   })
   .strict();
 
@@ -75,9 +81,18 @@ export interface ResolvedConfig {
   budget: Partial<Record<string, number>>;
   /** Per-asset per-call ceiling. */
   maxPerCall: Partial<Record<string, number>>;
+  /** Where `budget.sat` came from, for the startup audit line. Unset = no sat budget. */
+  budgetSatSource?: "flag" | "file" | "env";
+  /** The config file that was actually loaded, when any. */
+  configPath?: string;
   namespace: "prefix" | "flat";
   /** Reserved: validated and documented, but v1 sends nothing anywhere. */
   telemetry: boolean;
+  /**
+   * Present = record payment receipts. `path` unset = the store's default
+   * (`~/.bolthub/receipts.jsonl`). Absent = off; nothing is ever written.
+   */
+  receipts?: { path?: string };
 }
 
 export interface CliArgs {
@@ -87,6 +102,8 @@ export interface CliArgs {
   budgetSats?: number;
   maxPerCallSats?: number;
   apiUrl?: string;
+  /** `"default"` = the store's default path. */
+  receiptsPath?: string;
   help: boolean;
 }
 
@@ -109,18 +126,33 @@ export function parseArgs(argv: string[]): CliArgs {
     else if (a === "--budget") out.budgetSats = parsePositiveInt(next(), a);
     else if (a === "--max-per-call") out.maxPerCallSats = parsePositiveInt(next(), a);
     else if (a === "--api-url") out.apiUrl = next();
+    else if (a === "--receipts") out.receiptsPath = next();
     else if (a === "--help" || a === "-h") out.help = true;
     else throw new Error(`Unknown flag: ${a} (see --help)`);
   }
   return out;
 }
 
+/**
+ * Strict: digits only. `parseInt` would quietly turn "500k" into 500 or
+ * "5.5" into 5 — a spending limit must never be a truncation of what the
+ * user typed.
+ */
 function parsePositiveInt(value: string, flag: string): number {
-  const parsed = parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
+  if (!/^\d+$/.test(value.trim())) {
     throw new Error(`${flag} expects a non-negative integer, got "${value}"`);
   }
-  return parsed;
+  return parseInt(value.trim(), 10);
+}
+
+/**
+ * `BUDGET_SATS` set to something unparseable must ABORT, not fall through to
+ * unlimited — a malformed guardrail silently widening to "no limit" is the
+ * one failure mode a budget may not have. Empty/whitespace counts as unset.
+ */
+function parseEnvBudget(raw: string | undefined): number | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  return parsePositiveInt(raw, "BUDGET_SATS");
 }
 
 export function expandTilde(p: string): string {
@@ -192,15 +224,34 @@ export function resolveConfig(
   else if (nothingConfigured) marketplace = {};
   if (marketplace && cli.apiUrl) marketplace = { ...marketplace, apiUrl: cli.apiUrl };
 
-  const envBudget = env.BUDGET_SATS ? parseInt(env.BUDGET_SATS, 10) : NaN;
+  const envBudget = parseEnvBudget(env.BUDGET_SATS);
   const budget: Partial<Record<string, number>> = { ...(file.budget ?? {}) };
-  if (budget.sat === undefined && Number.isFinite(envBudget) && envBudget > 0) {
+  let budgetSatSource: ResolvedConfig["budgetSatSource"] =
+    budget.sat !== undefined ? "file" : undefined;
+  if (budget.sat === undefined && envBudget !== undefined) {
     budget.sat = envBudget;
+    budgetSatSource = "env";
   }
-  if (cli.budgetSats !== undefined) budget.sat = cli.budgetSats;
+  if (cli.budgetSats !== undefined) {
+    budget.sat = cli.budgetSats;
+    budgetSatSource = "flag";
+  }
 
   const maxPerCall: Partial<Record<string, number>> = { ...(file.maxPerCall ?? {}) };
   if (cli.maxPerCallSats !== undefined) maxPerCall.sat = cli.maxPerCallSats;
+
+  // Receipts: flag > file > RECEIPTS_PATH env. "default"/true = the store's
+  // default path. Off unless one of them opts in.
+  let receipts: ResolvedConfig["receipts"];
+  const envReceipts = env.RECEIPTS_PATH?.trim();
+  if (file.receipts === true) receipts = {};
+  else if (typeof file.receipts === "string") receipts = { path: expandTilde(file.receipts) };
+  if (receipts === undefined && envReceipts) {
+    receipts = envReceipts === "default" ? {} : { path: expandTilde(envReceipts) };
+  }
+  if (cli.receiptsPath !== undefined) {
+    receipts = cli.receiptsPath === "default" ? {} : { path: expandTilde(cli.receiptsPath) };
+  }
 
   return {
     marketplace,
@@ -208,7 +259,10 @@ export function resolveConfig(
     mcpServers: file.mcpServers ?? {},
     budget,
     maxPerCall,
+    budgetSatSource,
+    configPath: path,
     namespace: file.namespace ?? "prefix",
     telemetry: file.telemetry ?? false,
+    receipts,
   };
 }

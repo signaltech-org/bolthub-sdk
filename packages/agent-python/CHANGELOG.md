@@ -4,6 +4,25 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-10
+
+### Added
+
+- **Prepaid bundles.** `buy_bundle(url, uses, ...)` on `L402Client` and
+  `AsyncL402Client` pays once for an N-use credential; subsequent requests spend
+  it down with no further payment. Budget and `max_cost_sats` enforced on the
+  purchase. Parity with `@bolthub/pay` `buyBundle`.
+- **`attenuate()` v2.** New tighten-only keyword args `n_uses`, `max_sats`, and
+  `path_prefix` (with `method`/`valid_until`), validated against the
+  credential's existing caveats so a child can never widen scope.
+- **Payment-status / free retries.** `read_payment_status` + a frozen
+  `PaymentStatus`; both clients auto-retry free-retryable upstream failures
+  (5xx/429/408) with the same defaults as the TS SDK
+  (`retry_on_upstream_failure=True`), and `UpstreamFailedError` is available.
+- **Payment receipts.** `ReceiptStore` / `FileReceiptStore`, `on_paid`
+  enrichment, `export_receipts` (JSON/CSV, redactable), and offline
+  `verify_receipt`.
+
 ## [0.4.1] - 2026-07-07
 
 ### Added

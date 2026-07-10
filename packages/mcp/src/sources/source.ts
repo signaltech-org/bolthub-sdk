@@ -23,7 +23,7 @@ export interface SourceTool {
 export interface ToolSource {
   /** Unique namespacing key: config key, gateway slug, or `"marketplace"`. */
   readonly key: string;
-  readonly kind: "gateway" | "marketplace" | "mcp";
+  readonly kind: "gateway" | "marketplace" | "mcp" | "receipts";
   /**
    * `false` → tools are exposed unprefixed even in prefix mode (the
    * marketplace meta-tools are the server's "native" surface and

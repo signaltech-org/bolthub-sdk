@@ -33,6 +33,17 @@ describe("parseArgs", () => {
   test("rejects a negative budget", () => {
     expect(() => parseArgs(argv("--budget", "-5"))).toThrow(/non-negative/);
   });
+
+  test("rejects a budget with trailing garbage (parseInt would truncate '500k' to 500)", () => {
+    expect(() => parseArgs(argv("--budget", "500k"))).toThrow(/non-negative integer/);
+    expect(() => parseArgs(argv("--budget", "5.5"))).toThrow(/non-negative integer/);
+    expect(() => parseArgs(argv("--budget", "1e4"))).toThrow(/non-negative integer/);
+    expect(() => parseArgs(argv("--max-per-call", "50k"))).toThrow(/non-negative integer/);
+  });
+
+  test("rejects a missing budget value", () => {
+    expect(() => parseArgs(argv("--budget"))).toThrow(/Missing value/);
+  });
 });
 
 describe("resolveConfig", () => {
@@ -79,6 +90,51 @@ describe("resolveConfig", () => {
   test("budget of 0 via CLI is respected (free-tools-only mode)", () => {
     const cfg = resolveConfig(parseArgs(argv("--budget", "0")), { BUDGET_SATS: "500" });
     expect(cfg.budget.sat).toBe(0);
+  });
+
+  test("BUDGET_SATS=0 means free-tools-only, not unlimited", () => {
+    const cfg = resolveConfig(parseArgs(argv()), { BUDGET_SATS: "0" });
+    expect(cfg.budget.sat).toBe(0);
+    expect(cfg.budgetSatSource).toBe("env");
+  });
+
+  test("malformed BUDGET_SATS aborts startup instead of widening to unlimited", () => {
+    expect(() => resolveConfig(parseArgs(argv()), { BUDGET_SATS: "abc" })).toThrow(
+      /BUDGET_SATS expects a non-negative integer/,
+    );
+    expect(() => resolveConfig(parseArgs(argv()), { BUDGET_SATS: "-100" })).toThrow(
+      /BUDGET_SATS expects a non-negative integer/,
+    );
+    expect(() => resolveConfig(parseArgs(argv()), { BUDGET_SATS: "500k" })).toThrow(
+      /BUDGET_SATS expects a non-negative integer/,
+    );
+  });
+
+  test("malformed BUDGET_SATS aborts even when a valid --budget would win", () => {
+    // Fail-loud beats fail-quiet: an env var the user believes is in effect
+    // must never be silently discarded, even when overridden.
+    expect(() => resolveConfig(parseArgs(argv("--budget", "500")), { BUDGET_SATS: "oops" })).toThrow(
+      /BUDGET_SATS/,
+    );
+  });
+
+  test("empty BUDGET_SATS is treated as unset", () => {
+    const cfg = resolveConfig(parseArgs(argv()), { BUDGET_SATS: "" });
+    expect(cfg.budget.sat).toBeUndefined();
+    expect(cfg.budgetSatSource).toBeUndefined();
+  });
+
+  test("budgetSatSource names the winner of flag > file > env", () => {
+    const path = writeConfig({ budget: { sat: 2000 } });
+    expect(
+      resolveConfig(parseArgs(argv("--config", path, "--budget", "100")), { BUDGET_SATS: "3000" })
+        .budgetSatSource,
+    ).toBe("flag");
+    expect(
+      resolveConfig(parseArgs(argv("--config", path)), { BUDGET_SATS: "3000" }).budgetSatSource,
+    ).toBe("file");
+    expect(resolveConfig(parseArgs(argv()), { BUDGET_SATS: "3000" }).budgetSatSource).toBe("env");
+    expect(resolveConfig(parseArgs(argv()), {}).budgetSatSource).toBeUndefined();
   });
 
   test("mcpServers keys with '__' are rejected", () => {

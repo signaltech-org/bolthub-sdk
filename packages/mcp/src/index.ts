@@ -18,6 +18,7 @@ import { createPaymentServices } from "./payment.js";
 import { GatewaySource } from "./sources/gateway.js";
 import { MarketplaceSource } from "./sources/marketplace.js";
 import { McpServerSource } from "./sources/mcp.js";
+import { ReceiptsSource } from "./sources/receipts.js";
 import type { ToolSource } from "./sources/source.js";
 import { buildAggregate } from "./aggregate.js";
 import { createUnifiedServer, serveStdio } from "./server.js";
@@ -41,6 +42,9 @@ Flags:
   --budget <sats>        lifetime budget for this run (budget.sat)
   --max-per-call <sats>  per-call ceiling (maxPerCall.sat)
   --api-url <url>        override the directory API base URL
+  --receipts <path>      record proof-of-payment receipts to this JSONL file
+                         ("default" = ~/.bolthub/receipts.jsonl) and enable
+                         the export_receipts tool
   --help                 this text
 
 Config file (~/.bolthub/mcp.json) — the "mcpServers" block is the exact shape
@@ -57,6 +61,17 @@ your MCP client already uses, so paste it in wholesale:
     "namespace":  "prefix",
     "telemetry":  false
   }
+
+Env:
+  BUDGET_SATS            fallback for budget.sat when neither --budget nor the
+                         config file sets one (precedence: flag > file > env).
+                         A malformed value aborts startup — it never silently
+                         falls back to unlimited.
+  RECEIPTS_PATH          fallback for the receipt ledger when neither
+                         --receipts <path|default> nor "receipts" in the
+                         config sets one. Records one proof-of-payment
+                         receipt per paid call and enables the
+                         export_receipts tool. Off unless configured.
 
 Wallet (optional — free tools and marketplace search work without one):
 ${WALLET_ENV_HINT.split("\n").slice(1).join("\n")}
@@ -108,9 +123,21 @@ async function main() {
   }
   const services = createPaymentServices(config, wallet);
   if (config.budget.sat !== undefined) {
-    log(`budget: ${config.budget.sat} sats for this run${config.maxPerCall.sat !== undefined ? `, max ${config.maxPerCall.sat} sats/call` : ""}`);
+    // Always name the source: when a run spends more than expected, the
+    // first question is "which of flag/file/env actually won?".
+    const source =
+      config.budgetSatSource === "flag"
+        ? "--budget"
+        : config.budgetSatSource === "env"
+          ? "BUDGET_SATS env"
+          : `budget.sat in ${config.configPath ?? "config file"}`;
+    log(`budget: ${config.budget.sat} sats for this run (from ${source})${config.maxPerCall.sat !== undefined ? `, max ${config.maxPerCall.sat} sats/call` : ""}`);
   } else {
     log("no budget set (unlimited) — consider --budget or budget.sat in the config");
+  }
+
+  if (services.receiptStore) {
+    log(`receipts: recording to ${config.receipts?.path ?? "~/.bolthub/receipts.jsonl"} (export_receipts tool enabled)`);
   }
 
   // Build every configured source…
@@ -120,6 +147,7 @@ async function main() {
   for (const [key, entry] of Object.entries(config.mcpServers)) {
     sources.push(new McpServerSource(key, entry, services));
   }
+  if (services.receiptStore) sources.push(new ReceiptsSource(services.receiptStore));
   if (sources.length === 0) {
     console.error("No tool sources configured. Run with --help for the config format.");
     process.exit(1);

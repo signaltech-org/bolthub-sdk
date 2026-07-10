@@ -1,0 +1,45 @@
+{
+  "_comment": "Caveat schema v2 cross-language vectors (agent-features AF-G5). The path_prefix normalization, path matching, and n_uses/max_sats integer parsing MUST behave identically in the Go gateway verifier (apps/gateway-go/internal/l402/pathcaveat.go), the TS SDK (packages/pay/src/http/path-caveat.ts), and the Python SDK (packages/agent-python/bolthub/path_caveat.py) — otherwise a client could attenuate a path the gateway then judges differently. Spec: docs/design/agent-features/DESIGN.md §3. Each language reads THIS file and asserts. reject:true means the input must be rejected.",
+  "normalize_prefix": [
+    { "in": "/v1/search", "out": "/v1/search" },
+    { "in": "/v1/search/", "out": "/v1/search" },
+    { "in": "/", "out": "/" },
+    { "in": "/v1/%73earch", "out": "/v1/search" },
+    { "in": "/v1/./search", "out": "/v1/search" },
+    { "in": "", "reject": true },
+    { "in": "v1/search", "reject": true },
+    { "in": "/v1/../admin", "reject": true },
+    { "in": "/v1/%2e%2e/admin", "reject": true },
+    { "in": "/v1//search", "reject": true },
+    { "in": "//evil.example/x", "reject": true },
+    { "in": "/a://b", "reject": true },
+    { "in": "/v1\\admin", "reject": true }
+  ],
+  "normalize_request": [
+    { "in": "/v1//search", "out": "/v1/search" },
+    { "in": "/v1/search/", "out": "/v1/search" },
+    { "in": "/v1/%252e%252e/x", "out": "/v1/%2e%2e/x" },
+    { "in": "/v1/../x", "reject": true },
+    { "in": "/v1\\x", "reject": true }
+  ],
+  "match": [
+    { "prefix": "/v1/search", "path": "/v1/search", "match": true },
+    { "prefix": "/v1/search", "path": "/v1/search/deep", "match": true },
+    { "prefix": "/v1/search", "path": "/v1/searchx", "match": false },
+    { "prefix": "/v1/search", "path": "/v1", "match": false },
+    { "prefix": "/", "path": "/anything/at/all", "match": true },
+    { "prefix": "/v1/Search", "path": "/v1/search", "match": false }
+  ],
+  "parse_int": [
+    { "in": "1", "value": 1 },
+    { "in": "100", "value": 100 },
+    { "in": "4294967295", "value": 4294967295 },
+    { "in": "0", "reject": true },
+    { "in": "-1", "reject": true },
+    { "in": "+5", "reject": true },
+    { "in": "abc", "reject": true },
+    { "in": "5.0", "reject": true },
+    { "in": "4294967296", "reject": true },
+    { "in": "", "reject": true }
+  ]
+}

@@ -1,6 +1,7 @@
 import type { ApiClient, DirectoryEntry } from "./api-client.js";
-import { WALLET_ENV_HINT } from "@bolthub/pay";
-import type { L402Client } from "@bolthub/pay";
+import { WALLET_ENV_HINT, readPaymentStatus, attenuate } from "@bolthub/pay";
+import type { L402Client, AttenuateOptions } from "@bolthub/pay";
+import { auditMint, auditRevoke } from "../telemetry.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -283,9 +284,9 @@ export async function handleCallApi(
       });
 
     const text = await resp.text();
-    const suffix = callCost > 0
+    const suffix = (callCost > 0
       ? `\n\n---\nCost: ${callCost} sats${budgetSummary(l402Client)}`
-      : budgetSummary(l402Client);
+      : budgetSummary(l402Client)) + paymentOutcomeLine(resp);
 
     if (!resp.ok) {
       return {
@@ -304,10 +305,287 @@ export async function handleCallApi(
   }
 }
 
+/** Handle the `buy_bundle` MCP tool — pay once for an N-use prepaid bundle. */
+export async function handleBuyBundle(
+  args: { slug: string; path: string; uses: number; max_cost_sats?: number },
+  apiClient: ApiClient,
+  l402Client: L402Client | undefined,
+): Promise<ToolResult> {
+  if (!l402Client) {
+    return {
+      content: [{ type: "text", text: `Buying a bundle requires a wallet.\n${WALLET_ENV_HINT}` }],
+      isError: true,
+    };
+  }
+  try {
+    const url = apiClient.getGatewayUrl(args.slug, args.path);
+    const maxCost = args.max_cost_sats && args.max_cost_sats > 0 ? args.max_cost_sats : undefined;
+    let cost = 0;
+    const result = await l402Client.buyBundle(url, args.uses, {
+      maxCostSats: maxCost,
+      onPaid: (info) => {
+        cost = info.amount;
+      },
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Bought a ${result.uses}-use bundle for ${args.slug}${args.path}. Cost: ${cost} sats.${budgetSummary(l402Client)}\n` +
+            `call_api requests to this endpoint now use the bundle (no new payment) until it runs out.`,
+        },
+      ],
+    };
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error buying bundle: ${err instanceof Error ? err.message : String(err)}${budgetSummary(l402Client)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+/**
+ * Handle the `mint_scoped_token` MCP tool — attenuate the multi-use credential
+ * the server already holds for an endpoint into a tighter child, offline, so a
+ * sub-agent can be handed a scoped, capped credential without re-paying or ever
+ * seeing the parent's wallet (AF-D5). The child is just a macaroon: the worker
+ * spends it with a plain L402 client / `call_api`, and the gateway enforces
+ * every cap. Attenuation is tighten-only, so the child can never widen scope.
+ */
+export async function handleMintScopedToken(
+  args: {
+    slug: string;
+    path: string;
+    spend_cap_sats?: number;
+    n_uses?: number;
+    expiry?: string | number;
+    path_prefix?: string;
+  },
+  apiClient: ApiClient,
+  l402Client: L402Client | undefined,
+): Promise<ToolResult> {
+  if (!l402Client) {
+    return {
+      content: [{ type: "text", text: `Minting a scoped token requires a wallet.\n${WALLET_ENV_HINT}` }],
+      isError: true,
+    };
+  }
+  const url = apiClient.getGatewayUrl(args.slug, args.path);
+  const cred = l402Client.getBundleCredential(url);
+  if (!cred) {
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `No delegable credential is held for ${args.slug}${args.path}. Delegation attenuates a ` +
+            `multi-use bundle credential: buy_bundle for this endpoint first, then mint a scoped child from it. ` +
+            `(A single-use per_request payment is spent in the same call, so there is nothing cached to hand on.)`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const opts: AttenuateOptions = {};
+  if (args.n_uses != null) opts.nUses = args.n_uses;
+  if (args.spend_cap_sats != null) opts.maxSats = args.spend_cap_sats;
+  if (args.path_prefix != null) opts.pathPrefix = args.path_prefix;
+  let expiryMs: number | undefined;
+  if (args.expiry != null) {
+    expiryMs = typeof args.expiry === "number" ? args.expiry : Date.parse(args.expiry);
+    if (!Number.isFinite(expiryMs)) {
+      return {
+        content: [{ type: "text", text: `Invalid expiry ${JSON.stringify(args.expiry)}: pass an ISO 8601 timestamp or Unix milliseconds.` }],
+        isError: true,
+      };
+    }
+    opts.validUntil = expiryMs;
+  }
+
+  let child: string;
+  try {
+    child = attenuate(cred.macaroon, opts); // throws if no restriction, or if it would widen scope
+  } catch (err) {
+    return {
+      content: [{ type: "text", text: `Error minting scoped token: ${err instanceof Error ? err.message : String(err)}` }],
+      isError: true,
+    };
+  }
+
+  // AF-D6 budget interlock: hold the child's sat cap against the parent budget
+  // now, so parent + children can never jointly overspend the parent's intent
+  // (SPIKE-6 reserve semantics). Boundary: cap == remaining accepted,
+  // remaining + 1 refused. Attenuate first (pure) so a refusal mints nothing.
+  if (args.spend_cap_sats != null) {
+    try {
+      l402Client.reserveDelegatedCap(args.spend_cap_sats);
+    } catch {
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Child spend cap ${args.spend_cap_sats} sats exceeds your remaining budget ` +
+              `(${l402Client.remainingBudget} sats). Lower the cap or free budget first — no token was minted.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+  }
+
+  auditMint({
+    resource: `${args.slug}${args.path}`,
+    nUses: args.n_uses,
+    maxSats: args.spend_cap_sats,
+    pathPrefix: args.path_prefix,
+    expiryMs,
+  });
+
+  const childCredential = `L402 ${child}:${cred.preimage}`;
+  const reservedNote =
+    args.spend_cap_sats != null
+      ? ` Reserved ${args.spend_cap_sats} sats from your budget (${l402Client.remainingBudget} remaining); revoke_token returns it.`
+      : "";
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          `Minted a scoped child credential for ${args.slug}${args.path}.\n` +
+          `Scope: ${scopeSummary(opts, expiryMs)}.${reservedNote}\n\n` +
+          `Hand this to the sub-agent as its Authorization header (it works with a plain L402 client or call_api):\n` +
+          `${childCredential}\n\n` +
+          `The gateway enforces every cap and the child cannot widen this scope. Revoke the whole delegation tree with revoke_token.`,
+      },
+    ],
+  };
+}
+
+/**
+ * Handle the `revoke_token` MCP tool — revoke the grant behind a bundle the
+ * session holds, killing the whole delegation tree minted from it (AF-D8). The
+ * gateway is authed by the credential's own preimage (payment_hash =
+ * sha256(preimage)); on success the local credential is dropped so we stop
+ * presenting a dead token, and any child-cap budget the caller names is
+ * returned to the parent budget.
+ */
+export async function handleRevokeToken(
+  args: { slug: string; path: string; released_sats?: number },
+  apiClient: ApiClient,
+  l402Client: L402Client | undefined,
+): Promise<ToolResult> {
+  if (!l402Client) {
+    return {
+      content: [{ type: "text", text: `Revoking a token requires a wallet.\n${WALLET_ENV_HINT}` }],
+      isError: true,
+    };
+  }
+  const endpointUrl = apiClient.getGatewayUrl(args.slug, args.path);
+  const cred = l402Client.getBundleCredential(endpointUrl);
+  if (!cred) {
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `No credential is held for ${args.slug}${args.path}, so there is nothing to revoke here. ` +
+            `revoke_token kills the grant behind a bundle this session bought (and every child minted from it).`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  const revokeUrl = apiClient.getGatewayUrl(args.slug, "/.well-known/l402/revoke");
+  try {
+    const resp = await fetch(revokeUrl, {
+      method: "POST",
+      headers: { Authorization: `L402 ${cred.macaroon}:${cred.preimage}` },
+    });
+    if (!resp.ok) {
+      const detail = await resp.text().catch(() => "");
+      return {
+        content: [{ type: "text", text: `Revoke failed (HTTP ${resp.status})${detail ? `: ${detail}` : ""}.` }],
+        isError: true,
+      };
+    }
+    // Stop presenting the now-dead credential locally, and return any child-cap
+    // budget the caller reserved for descendants of this grant.
+    l402Client.dropBundleCredential(endpointUrl);
+    let released = "";
+    if (args.released_sats && args.released_sats > 0) {
+      l402Client.rollbackDelegatedCap(args.released_sats);
+      released = ` Returned ${args.released_sats} sats of reserved child budget (${l402Client.remainingBudget} remaining).`;
+    }
+    auditRevoke({ resource: `${args.slug}${args.path}`, releasedSats: args.released_sats });
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Revoked the grant for ${args.slug}${args.path}. The parent credential and every child minted from it ` +
+            `fail on their next request (token_revoked) within ~15s.${released}`,
+        },
+      ],
+    };
+  } catch (err) {
+    return {
+      content: [{ type: "text", text: `Error revoking token: ${err instanceof Error ? err.message : String(err)}` }],
+      isError: true,
+    };
+  }
+}
+
+/** Human-readable one-line summary of a child's scope for the mint result. */
+function scopeSummary(opts: AttenuateOptions, expiryMs?: number): string {
+  const parts: string[] = [];
+  if (opts.nUses != null) parts.push(`${opts.nUses} use${opts.nUses === 1 ? "" : "s"}`);
+  if (opts.maxSats != null) parts.push(`≤ ${opts.maxSats} sats total`);
+  if (opts.pathPrefix != null) parts.push(`paths under ${opts.pathPrefix}`);
+  if (opts.method != null) parts.push(`method ${opts.method}`);
+  if (expiryMs != null) parts.push(`expires ${new Date(expiryMs).toISOString()}`);
+  return parts.length ? parts.join(", ") : "(no restriction)";
+}
+
 function prettyJson(text: string): string {
   try {
     return JSON.stringify(JSON.parse(text), null, 2);
   } catch {
     return text;
+  }
+}
+
+/**
+ * One line telling the agent what happened to this call's money, from the
+ * gateway's X-Bolthub-Payment taxonomy (AF-R5). L402Client already retried
+ * free-retryable failures transparently, so a surviving `reverted` /
+ * `refunded_to_balance` means the origin kept failing — the key fact for a
+ * retry loop is that re-sending costs nothing. Empty when the gateway
+ * didn't emit the headers (flag off / older gateway).
+ */
+function paymentOutcomeLine(resp: Response): string {
+  const status = readPaymentStatus(resp.headers);
+  if (!status) return "";
+  switch (status.state) {
+    case "charged":
+      return resp.ok
+        ? "\nPayment: charged"
+        : "\nPayment: charged (4xx answers are real responses and stay paid)";
+    case "reverted":
+      return "\nPayment: reverted — NOT lost; re-sending this exact call is free (no new payment)";
+    case "refunded_to_balance":
+      return "\nPayment: refunded to session balance — re-sending this call is free";
+    case "not_charged":
+      return "\nPayment: not charged";
+    default:
+      return `\nPayment: ${status.state}${status.code ? ` (${status.code})` : ""}`;
   }
 }

@@ -1,10 +1,12 @@
-export { L402Client, L402Error, L402BudgetError, L402TimeoutError, L402PaymentError } from "./http/client";
+export { L402Client, L402Error, L402BudgetError, L402TimeoutError, L402PaymentError, UpstreamFailedError } from "./http/client";
+export { readPaymentStatus, PAYMENT_HEADER, PAYMENT_CODE_HEADER } from "./http/payment-status";
+export type { PaymentStatus, PaymentState, PaymentCode } from "./http/payment-status";
 export { LnbitsWallet } from "./wallets/lnbits";
 export { NwcWallet } from "./wallets/nwc";
 export { WebLnWallet, isWebLnAvailable } from "./wallets/webln";
 // FileSessionStore is intentionally omitted — it uses Node.js fs/path/os APIs
 export type { SessionStore, SessionData } from "./http/session-store";
-export type { WalletAdapter, L402ClientOptions, L402Challenge, L402RequestOptions } from "./http/types";
+export type { WalletAdapter, L402ClientOptions, L402Challenge, L402RequestOptions, PaidInfo } from "./http/types";
 export type { LnbitsWalletOptions } from "./wallets/lnbits";
 export type { NwcConnection } from "./wallets/nwc";
 

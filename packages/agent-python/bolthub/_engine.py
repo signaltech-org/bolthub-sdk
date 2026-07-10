@@ -34,6 +34,11 @@ class L402BudgetError(L402Error):
 
 
 _MAC_RE = re.compile(r'macaroon="([^"]+)"')
+# The token-agnostic field the L402 spec is renaming toward (bLIP-0026).
+# Accepted as a fallback; `macaroon=` still wins when both are present, so
+# today's gateways parse identically. `\b` avoids matching inside another
+# field name (e.g. a stray "mytoken=").
+_TOKEN_RE = re.compile(r'\btoken="([^"]+)"')
 _INV_RE = re.compile(r'invoice="([^"]+)"')
 
 #: Accepted values for ``on_unknown_amount``.
@@ -47,11 +52,11 @@ def parse_challenge(www_authenticate: str | None) -> tuple[str, str] | None:
     """
     if not www_authenticate:
         return None
-    mac = _MAC_RE.search(www_authenticate)
+    cred = _MAC_RE.search(www_authenticate) or _TOKEN_RE.search(www_authenticate)
     inv = _INV_RE.search(www_authenticate)
-    if not mac or not inv:
+    if not cred or not inv:
         return None
-    return mac.group(1), inv.group(1)
+    return cred.group(1), inv.group(1)
 
 
 def response_amount_sats(body: Any) -> Any:

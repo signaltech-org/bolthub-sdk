@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import random
 import time
 from typing import Any, Callable, Optional
 
@@ -19,9 +20,16 @@ from ._engine import (
     session_key,
     update_session,
 )
+from .payment_status import UpstreamFailedError, read_payment_status
 from .awallets import SyncWalletAdapter
 from .budget import Budget
-from .client import _SessionInfo
+from .client import (
+    _BUNDLE_CREDENTIAL_TTL,
+    _SessionInfo,
+    _record_receipt,
+    _response_payment_hash,
+)
+from .receipt_store import ReceiptStore, export_receipts
 from .session_store import InMemorySessionStore, SessionStore
 
 __all__ = ["AsyncL402Client"]
@@ -65,6 +73,10 @@ class AsyncL402Client:
         on_paid: Optional[Callable[[dict], None]] = None,
         rate_limit_retries: int = 2,
         max_retry_after: float = 10.0,
+        retry_on_upstream_failure: bool = True,
+        upstream_retries: int = 2,
+        throw_on_upstream_failure: bool = False,
+        receipt_store: ReceiptStore | None = None,
     ):
         if budget is not None and budget_sats is not None:
             raise ValueError(
@@ -82,8 +94,14 @@ class AsyncL402Client:
         self._on_paid = on_paid
         self._rate_limit_retries = rate_limit_retries
         self._max_retry_after = max_retry_after
+        self._retry_on_upstream_failure = retry_on_upstream_failure
+        self._upstream_retries = upstream_retries
+        self._throw_on_upstream_failure = throw_on_upstream_failure
+        self._receipt_store = receipt_store
         self._client = httpx.AsyncClient(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
+        # Prepaid-bundle credentials by host+path: (macaroon, preimage, expires_at).
+        self._bundle_store: dict[str, tuple[str, str, float]] = {}
 
     @property
     def total_spent(self) -> int:
@@ -106,6 +124,24 @@ class AsyncL402Client:
         """Remove all cached session tokens."""
         self._store.clear()
 
+    def export_receipts(
+        self,
+        *,
+        from_ts=None,
+        to_ts=None,
+        format: str = "json",
+        redact: bool = False,
+    ) -> str:
+        """Sync mirror of :meth:`L402Client.export_receipts` (store reads are
+        local; nothing to await)."""
+        if self._receipt_store is None:
+            raise L402Error(
+                "export_receipts: no receipt_store configured — pass one "
+                "(e.g. FileReceiptStore()) to the client constructor"
+            )
+        receipts = self._receipt_store.list(from_ts=from_ts, to_ts=to_ts)
+        return export_receipts(receipts, format=format, redact=redact)
+
     async def get(self, url: str, **kwargs: Any) -> httpx.Response:
         """Convenience wrapper around :meth:`request` with ``method="GET"``."""
         return await self.request("GET", url, **kwargs)
@@ -113,6 +149,88 @@ class AsyncL402Client:
     async def post(self, url: str, **kwargs: Any) -> httpx.Response:
         """Convenience wrapper around :meth:`request` with ``method="POST"``."""
         return await self.request("POST", url, **kwargs)
+
+    def clear_bundles(self) -> None:
+        """Drop all cached bundle credentials."""
+        self._bundle_store.clear()
+
+    async def buy_bundle(
+        self,
+        url: str,
+        uses: int,
+        *,
+        method: str = "GET",
+        max_cost_sats: int | None = None,
+        on_paid: Optional[Callable[[dict], None]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Async mirror of :meth:`L402Client.buy_bundle`: pay once for ``uses``
+        requests, then :meth:`request` burns a use per call until spent."""
+        if not isinstance(uses, int) or uses <= 0:
+            raise L402Error("buy_bundle: uses must be a positive integer")
+
+        headers = dict(kwargs.get("headers", {}))
+        headers["X-Bolthub-Bundle"] = str(uses)
+        kw = {**kwargs, "headers": headers}
+
+        resp = await self._request_retrying_429(method, url, **kw)
+        if resp.status_code != 402:
+            detail = ""
+            try:
+                detail = (resp.json() or {}).get("error", "")
+            except Exception:
+                pass
+            raise L402Error(
+                f"buy_bundle: endpoint did not offer this bundle (HTTP {resp.status_code}"
+                + (f": {detail}" if detail else "")
+                + ")"
+            )
+
+        challenge = parse_challenge(resp.headers.get("www-authenticate"))
+        if challenge is None:
+            raise L402Error("buy_bundle: failed to parse the bundle challenge")
+        macaroon, invoice = challenge
+
+        amount = self._extract_amount(resp, invoice)
+        charge = self._budget_tracker.reserve(amount, max_cost_sats=max_cost_sats)
+        try:
+            preimage = await self._wallet.pay_invoice(invoice)
+        except BaseException:
+            self._budget_tracker.rollback(charge)
+            raise
+
+        self._bundle_store[session_key(url)] = (
+            macaroon,
+            preimage,
+            time.time() + _BUNDLE_CREDENTIAL_TTL,
+        )
+
+        payment_hash = _response_payment_hash(resp)
+        if self._on_paid is not None or on_paid is not None:
+            info = {
+                "scheme": "l402",
+                "amount": charge,
+                "asset": "sat",
+                "resource": url,
+                "preimage": preimage,
+                "invoice": invoice,
+                "payment_hash": payment_hash,
+            }
+            if self._on_paid is not None:
+                self._on_paid(info)
+            if on_paid is not None:
+                on_paid(info)
+        _record_receipt(
+            self._receipt_store,
+            method=method,
+            url=url,
+            charge=charge,
+            preimage=preimage,
+            invoice=invoice,
+            payment_hash=payment_hash,
+            resp=resp,
+        )
+        return {"uses": uses, "resource": url}
 
     async def request(
         self,
@@ -130,13 +248,30 @@ class AsyncL402Client:
         callback, letting callers attribute an exact cost to this call.
         """
         skey = session_key(url)
+
+        # Prepaid bundle: present a cached credential first (burn, no pay); a
+        # 402 means spent — drop it and fall through.
+        bundle = self._bundle_store.get(skey)
+        if bundle is not None:
+            macaroon_b, preimage_b, expires = bundle
+            if expires > time.time():
+                headers = dict(kwargs.get("headers", {}))
+                headers["Authorization"] = f"L402 {macaroon_b}:{preimage_b}"
+                kw = {**kwargs, "headers": headers}
+                resp = await self._request_retrying_upstream(method, url, **kw)
+                if resp.status_code != 402:
+                    return resp
+                del self._bundle_store[skey]
+            else:
+                del self._bundle_store[skey]
+
         session = self._store.get(skey)
 
         if session and session.expires_at > time.time():
             headers = dict(kwargs.get("headers", {}))
             headers["X-Session-Token"] = session.token
             kw = {**kwargs, "headers": headers}
-            resp = await self._request_retrying_429(method, url, **kw)
+            resp = await self._request_retrying_upstream(method, url, **kw)
             if resp.status_code != 402:
                 update_session(self._store, skey, resp.headers)
                 return resp
@@ -161,8 +296,18 @@ class AsyncL402Client:
             self._budget_tracker.rollback(charge)
             raise
 
+        payment_hash = _response_payment_hash(resp)
         if self._on_paid is not None or on_paid is not None:
-            info = {"scheme": "l402", "amount": charge, "asset": "sat", "resource": url}
+            # Receipt fields, mirroring the sync client (see client.py).
+            info = {
+                "scheme": "l402",
+                "amount": charge,
+                "asset": "sat",
+                "resource": url,
+                "preimage": preimage,
+                "invoice": invoice,
+                "payment_hash": payment_hash,
+            }
             if self._on_paid is not None:
                 self._on_paid(info)
             if on_paid is not None:
@@ -174,9 +319,48 @@ class AsyncL402Client:
 
         # A 429 here is retried with the SAME L402 proof: the gateway
         # reverts the invoice consumption when it answers 429, so the
-        # retry re-uses the payment already made above.
-        resp = await self._request_retrying_429(method, url, **kwargs)
+        # retry re-uses the payment already made above. The same holds for
+        # origin failures the gateway reports as upstream_failed_retryable.
+        resp = await self._request_retrying_upstream(method, url, **kwargs)
         update_session(self._store, skey, resp.headers)
+        _record_receipt(
+            self._receipt_store,
+            method=method,
+            url=url,
+            charge=charge,
+            preimage=preimage,
+            invoice=invoice,
+            payment_hash=payment_hash,
+            resp=resp,
+        )
+        return resp
+
+    async def _request_retrying_upstream(
+        self, method: str, url: str, **kwargs: Any
+    ) -> httpx.Response:
+        """Async mirror of ``L402Client._request_retrying_upstream``: free,
+        signal-gated retries on ``upstream_failed_retryable`` responses."""
+        resp = await self._request_retrying_429(method, url, **kwargs)
+        attempts = 1
+        if self._retry_on_upstream_failure and self._upstream_retries > 0:
+            for attempt in range(1, self._upstream_retries + 1):
+                status = read_payment_status(resp.headers)
+                if status is None or status.code != "upstream_failed_retryable":
+                    break
+                await asyncio.sleep(0.25 * 2 ** (attempt - 1) + random.random() * 0.1)
+                resp = await self._request_retrying_429(method, url, **kwargs)
+                attempts += 1
+        if self._throw_on_upstream_failure:
+            status = read_payment_status(resp.headers)
+            if status is not None and status.code == "upstream_failed_retryable":
+                raise UpstreamFailedError(
+                    f"Upstream failed (HTTP {resp.status_code}) after {attempts} "
+                    f"attempt(s); payment {status.state} — retrying later is free",
+                    payment_status=status,
+                    http_status=resp.status_code,
+                    attempts=attempts,
+                    resource=url,
+                )
         return resp
 
     async def _request_retrying_429(

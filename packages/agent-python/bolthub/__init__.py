@@ -1,6 +1,13 @@
 from .client import L402Client, L402Error, L402BudgetError
 from .auth import L402Auth
 from .aclient import AsyncL402Client
+from .payment_status import (
+    PAYMENT_HEADER,
+    PAYMENT_CODE_HEADER,
+    PaymentStatus,
+    read_payment_status,
+    UpstreamFailedError,
+)
 from .wallets import LndWallet, LnbitsWallet, PhoenixdWallet, NwcWallet, WalletAdapter
 from .awallets import (
     AsyncWalletAdapter,
@@ -15,6 +22,19 @@ from .session_store import (
     InMemorySessionStore,
     SessionStore,
     SessionData,
+)
+from .receipt_store import (
+    Receipt,
+    ReceiptStore,
+    InMemoryReceiptStore,
+    FileReceiptStore,
+    complete_receipt,
+    export_receipts,
+)
+from .receipt_verify import (
+    ReceiptVerifyResult,
+    bolt11_payment_hash,
+    verify_receipt,
 )
 from .delegate import attenuate
 
@@ -46,6 +66,11 @@ __all__ = [
     "L402Auth",
     "L402Error",
     "L402BudgetError",
+    "PAYMENT_HEADER",
+    "PAYMENT_CODE_HEADER",
+    "PaymentStatus",
+    "read_payment_status",
+    "UpstreamFailedError",
     "LndWallet",
     "LnbitsWallet",
     "PhoenixdWallet",
@@ -58,6 +83,15 @@ __all__ = [
     "AsyncPhoenixdWallet",
     "AsyncNwcWallet",
     "FileSessionStore",
+    "Receipt",
+    "ReceiptStore",
+    "InMemoryReceiptStore",
+    "FileReceiptStore",
+    "complete_receipt",
+    "export_receipts",
+    "ReceiptVerifyResult",
+    "bolt11_payment_hash",
+    "verify_receipt",
     "InMemorySessionStore",
     "SessionStore",
     "SessionData",

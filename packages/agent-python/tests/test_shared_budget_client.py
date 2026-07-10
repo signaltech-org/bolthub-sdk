@@ -81,6 +81,10 @@ class TestSharedPool:
                 "amount": 40,
                 "asset": "sat",
                 "resource": "https://x.gw.bolthub.ai/v1/data",
+                # Receipt fields (AF-B2): additive enrichment of on_paid.
+                "preimage": "ab" * 32,
+                "invoice": "lnbc1000...",
+                "payment_hash": None,  # this 402 body carries no paymentHash
             }
         ]
 

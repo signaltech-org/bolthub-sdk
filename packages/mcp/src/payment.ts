@@ -12,8 +12,8 @@
  * behavior (free tools work, paid ones surface the challenge).
  */
 
-import { Budget, FileSessionStore, L402Client, ToolClient, l402Payer } from "@bolthub/pay";
-import type { WalletAdapter } from "@bolthub/pay";
+import { Budget, FileReceiptStore, FileSessionStore, L402Client, ToolClient, l402Payer } from "@bolthub/pay";
+import type { ReceiptStore, WalletAdapter } from "@bolthub/pay";
 import type { ResolvedConfig } from "./config";
 import { audit } from "./telemetry";
 
@@ -24,6 +24,13 @@ export interface PaymentServices {
   l402Client?: L402Client;
   /** Present iff a wallet is configured (ToolClient requires ≥1 payer). */
   toolClient?: ToolClient;
+  /**
+   * Present iff receipts are configured. Exists even without a wallet so
+   * `export_receipts` can read a ledger written by earlier runs. Known gap:
+   * only the L402 (gateway/marketplace) path records receipts; downstream
+   * TPP payments don't yet expose the preimage to record.
+   */
+  receiptStore?: ReceiptStore;
 }
 
 export function createPaymentServices(
@@ -31,13 +38,15 @@ export function createPaymentServices(
   wallet: WalletAdapter | undefined,
 ): PaymentServices {
   const budget = new Budget({ maxTotal: config.budget, maxPerCall: config.maxPerCall });
-  if (!wallet) return { budget };
+  const receiptStore = config.receipts ? new FileReceiptStore(config.receipts.path) : undefined;
+  if (!wallet) return { budget, receiptStore };
 
   const l402Client = new L402Client({
     wallet,
     budget,
     timeoutMs: 45_000,
     sessionStore: new FileSessionStore(),
+    receiptStore,
     onPaid: audit,
   });
   const toolClient = new ToolClient({
@@ -45,5 +54,5 @@ export function createPaymentServices(
     budget,
     onPaid: audit,
   });
-  return { budget, wallet, l402Client, toolClient };
+  return { budget, wallet, l402Client, toolClient, receiptStore };
 }
