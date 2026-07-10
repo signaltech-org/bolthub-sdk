@@ -27,7 +27,7 @@ bun add @bolthub/pay
 import { createPaywall, l402Rail } from "@bolthub/pay";
 
 // A rail needs a signing secret (≥32 bytes) and something that makes invoices.
-// Wrap your wallet (NWC / LND / phoenixd / LNbits) or a bolthub facilitator.
+// Wrap your wallet (LND / NWC / LNbits / Phoenixd) or a bolthub facilitator.
 const pay = createPaywall({
   rails: [
     l402Rail({
@@ -153,6 +153,37 @@ for the browser build. `walletFromEnv()` builds one from the standard env vars
 (`LND_REST_HOST`/`LND_MACAROON`, `LNBITS_URL`/`LNBITS_ADMIN_KEY`,
 `PHOENIXD_URL`/`PHOENIXD_PASSWORD`, `NWC_URI`). `attenuate()` narrows an L402
 macaroon offline to delegate a restricted credential to a sub-agent.
+
+### Prepaid bundles, receipts, and free retries
+
+`L402Client` adds three agent-native behaviors on top of pay-and-retry:
+
+- **Prepaid bundles.** On a `per_request` endpoint that offers them,
+  `buyBundle(url, n)` pays once for an N-use credential; ordinary calls to that
+  URL then spend it down with no further payment until it runs out. You pass the
+  size, not the price, so a client can't underpay, and a bundle is scoped to the
+  one endpoint you bought it for.
+
+  ```ts
+  await client.buyBundle("https://acme.gw.bolthub.ai/v1/data", 100);
+  for (let i = 0; i < 100; i++) await client.get("https://acme.gw.bolthub.ai/v1/data");
+  ```
+
+- **Free retries on origin failure.** When the origin is unreachable or answers
+  5xx/408/429 after you have paid, your proof stays spendable and the client
+  re-sends for free. On by default (`retryOnUpstreamFailure`).
+
+- **Verifiable receipts.** Point the client at a receipt store and every paid
+  call records a preimage-backed receipt you can export and verify offline.
+  Redacted exports keep the expense record but strip the preimage.
+
+  ```ts
+  import { L402Client, FileReceiptStore } from "@bolthub/pay";
+
+  const client = new L402Client({ wallet, receiptStore: new FileReceiptStore() });
+  // ... paid calls ...
+  const csv = client.exportReceipts({ format: "csv", redact: true });
+  ```
 
 ## One budget across both buyer paths
 

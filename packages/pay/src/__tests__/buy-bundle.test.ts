@@ -167,4 +167,71 @@ describe("buyBundle", () => {
     ).rejects.toThrow(L402BudgetError);
     expect(w.payInvoice).not.toHaveBeenCalled();
   });
+
+  // The phantom-bundle guard (the delegation smoke test's step-5/6/7 failure):
+  // a 402 challenge WITHOUT a bundleUses echo is a plain single-use invoice the
+  // server minted after ignoring (or refusing) the bundle header. Paying it and
+  // caching it as an N-use bundle silently reverts to per-call payment after
+  // one use — so the purchase must be refused BEFORE the wallet is touched,
+  // and nothing may be cached.
+  test("refuses to pay when the server does not echo bundleUses (no phantom bundle)", async () => {
+    const w = wallet();
+    const client = new L402Client({ wallet: w });
+    const calls = scriptFetch([
+      // Single-use challenge: no bundleUses in the body.
+      new Response(JSON.stringify({ error: "Payment Required", amountSats: 3, paymentHash: "h1" }), {
+        status: 402,
+        headers: { "WWW-Authenticate": 'L402 macaroon="single", invoice="lnbc3..."' },
+      }),
+      // The follow-up get() must run the NORMAL unauthenticated flow (no
+      // cached credential presented).
+      new Response(JSON.stringify({ error: "Payment Required", amountSats: 3, paymentHash: "h2" }), {
+        status: 402,
+        headers: { "WWW-Authenticate": 'L402 macaroon="single2", invoice="lnbc3..."' },
+      }),
+      new Response("{}", { status: 200 }),
+    ]);
+
+    await expect(
+      client.buyBundle("https://acme.gw.bolthub.ai/v1/data", 100),
+    ).rejects.toThrow(/did not honor the bundle request/);
+    expect(w.payInvoice).not.toHaveBeenCalled();
+
+    // Nothing was cached: the next request starts unauthenticated.
+    const resp = await client.get("https://acme.gw.bolthub.ai/v1/data");
+    expect(resp.status).toBe(200);
+    expect(calls[1].auth).toBeNull();
+  });
+
+  test("refuses to pay when the server echoes a different size", async () => {
+    const w = wallet();
+    const client = new L402Client({ wallet: w });
+    scriptFetch([
+      new Response(
+        JSON.stringify({ error: "Payment Required", amountSats: 8000, paymentHash: "h1", bundleUses: 50 }),
+        { status: 402, headers: { "WWW-Authenticate": 'L402 macaroon="m", invoice="lnbc8000..."' } },
+      ),
+    ]);
+    await expect(
+      client.buyBundle("https://acme.gw.bolthub.ai/v1/data", 100),
+    ).rejects.toThrow(/offered a 50-use bundle, not the 100 requested/);
+    expect(w.payInvoice).not.toHaveBeenCalled();
+  });
+
+  // Structured grant refusals (bundle_exhausted / token_revoked /
+  // not_bundle_backed) are 402s WITHOUT a challenge. They must surface as the
+  // server's own code and message — the deterministic "stop, don't retry"
+  // answer — not as a challenge-parse error.
+  test("request() surfaces a structured 402 refusal with the server's code", async () => {
+    const client = new L402Client({ wallet: wallet() });
+    scriptFetch([
+      new Response(
+        JSON.stringify({ error: "Bundle revoked", code: "token_revoked" }),
+        { status: 402 }, // no WWW-Authenticate: a refusal, not a challenge
+      ),
+    ]);
+    await expect(
+      client.get("https://acme.gw.bolthub.ai/v1/data"),
+    ).rejects.toThrow(/Payment refused: Bundle revoked \[token_revoked\]/);
+  });
 });

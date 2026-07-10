@@ -2,7 +2,7 @@
 
 The bolthub MCP server. **One entry** in your MCP client config; behind it, three kinds of tool source sharing one wallet and one Lightning budget:
 
-- **The bolthub marketplace** — search, inspect, and call every listed API (`search_apis`, `get_api_details`, `preview_cost`, `call_api`, plus the Node Launcher tools).
+- **The bolthub marketplace** — search, inspect, and call every listed API (`search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_bundle`, `mint_scoped_token`, `revoke_token`, plus the Node Launcher tools).
 - **Specific L402 gateways** — a gateway's OpenAPI endpoints become directly-named tools.
 - **Your other MCP servers** — local or remote, proxied transparently: free tools pass straight through; a tool that answers with an L402 payment challenge is paid inside your budget and retried.
 
@@ -61,7 +61,7 @@ Then point the client at it:
     "bolthub": {
       "command": "npx",
       "args": ["-y", "@bolthub/mcp", "--config", "~/.bolthub/mcp.json"],
-      "env": { "PHOENIXD_URL": "…", "PHOENIXD_PASSWORD": "…" }
+      "env": { "LND_REST_HOST": "…", "LND_MACAROON": "…" }
     }
   }
 }
@@ -69,7 +69,7 @@ Then point the client at it:
 
 ### What the agent sees
 
-- Marketplace meta-tools, unprefixed: `search_apis`, `get_api_details`, `preview_cost`, `call_api`, `deploy_node`, `node_status`.
+- Marketplace meta-tools, unprefixed: `search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_bundle`, `mint_scoped_token`, `revoke_token`, `deploy_node`, `node_status`.
 - Gateway endpoints, prefixed by gateway slug: `btc-intel__get_v1_history_candles`, ….
 - Downstream MCP tools, prefixed by their config key: `filesystem__read_file`, ….
 
@@ -80,10 +80,10 @@ Two servers can both expose a `search` tool — prefixing keeps them apart. `nam
 Set ONE of these in the server's `env`:
 
 ```
-PHOENIXD_URL + PHOENIXD_PASSWORD     (recommended, fast <200ms)
-LND_REST_HOST + LND_MACAROON         (fastest, <200ms)
-LNBITS_URL + LNBITS_ADMIN_KEY        (fast, <300ms)
-NWC_URI                              (easiest, but slower 1-3s)
+LND_REST_HOST + LND_MACAROON         (recommended, fastest <200ms)
+NWC_URI                              (easiest setup, slower 1-3s)
+LNBITS_URL + LNBITS_ADMIN_KEY        (alternative, <300ms)
+PHOENIXD_URL + PHOENIXD_PASSWORD     (alternative, <200ms)
 ```
 
 No wallet is not an error: free tools and marketplace search keep working; paid calls return their payment challenge with a setup hint.

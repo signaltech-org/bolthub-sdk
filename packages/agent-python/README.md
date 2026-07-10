@@ -195,6 +195,50 @@ client = L402Client(
 )
 ```
 
+## Prepaid bundles
+
+On a `per_request` endpoint that offers them, `buy_bundle` pays once for an
+N-use credential. Ordinary `get`/`post`/`request` calls to the same URL then
+spend it down with no further payment, until it runs out.
+
+```python
+# One Lightning payment for 100 calls to this endpoint.
+client.buy_bundle("https://acme.gw.bolthub.ai/v1/data", 100)
+
+for _ in range(100):
+    client.get("https://acme.gw.bolthub.ai/v1/data")  # no invoice paid
+```
+
+You pass the size, not the price: the gateway sets the amount from the seller's
+offer, so a client can't underpay. A bundle honors the same `budget_sats` and
+`max_cost_sats` caps and is scoped to the one endpoint you bought it for.
+`AsyncL402Client` exposes the same `await client.buy_bundle(...)`.
+
+## Free retries on origin failure
+
+When the gateway's origin is unreachable or answers 5xx/408/429 after you have
+paid, your proof stays spendable and the client re-sends for free. On by default
+(`retry_on_upstream_failure=True`); set `throw_on_upstream_failure=True` to get
+an exception instead.
+
+## Receipts
+
+Point the client at a `receipt_store` and every paid call records one
+preimage-backed receipt you can export and verify offline, with no service in
+the loop.
+
+```python
+from bolthub import L402Client, FileReceiptStore
+
+client = L402Client(wallet, receipt_store=FileReceiptStore())
+# ... paid calls happen ...
+csv_report = client.export_receipts(format="csv", redact=True)
+```
+
+Receipt files carry live preimages, so treat them like credentials and export
+with `redact=True` for shareable reports. `verify_receipt(receipt)` runs the
+offline proof-of-payment checks.
+
 ## Selling: paywall an MCP tool (TPP)
 
 `create_paywall` wraps any tool handler so a call must carry a valid payment
@@ -297,6 +341,9 @@ The gateway enforces every caveat down the chain (most restrictive wins).
 | `WalletAdapter` / `AsyncWalletAdapter` | Protocols for custom wallets |
 | `FileSessionStore` / `InMemorySessionStore` | Session token storage |
 | `SessionStore` | Protocol for custom session storage |
+| `FileReceiptStore` / `InMemoryReceiptStore` | Receipt ledger storage (preimage-backed proof of payment) |
+| `ReceiptStore` | Protocol for custom receipt storage |
+| `export_receipts(...)` / `verify_receipt(...)` | Serialize receipts to JSON/CSV; verify one offline |
 | `L402Error` | Base exception for L402 failures |
 | `L402BudgetError` | Raised when budget limits are exceeded |
 | `attenuate(...)` | Narrow a macaroon offline to delegate a restricted credential (needs `bolthub[delegation]`) |

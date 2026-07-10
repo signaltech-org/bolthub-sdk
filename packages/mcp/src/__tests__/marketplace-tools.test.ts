@@ -265,13 +265,39 @@ describe("handleCallApi", () => {
   test("annotates charged 4xx answers as staying paid", async () => {
     const apiClient = makeApiClient();
     const l402Client = makeL402Client({
-      request: mock(async () =>
-        new Response("bad request", {
+      // A fresh payment happened this call: onPaid fires with the cost.
+      request: mock(async (_url: string, opts: { onPaid?: (i: { amount: number }) => void }) => {
+        opts?.onPaid?.({ amount: 10 });
+        return new Response("bad request", {
           status: 400,
           headers: {
             "X-Bolthub-Payment": "charged",
             "X-Bolthub-Payment-Code": "upstream_rejected",
           },
+        });
+      }),
+    } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/data" },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.content[0].text).toContain("Payment: charged (4xx answers are real responses and stay paid)");
+  });
+
+  // A call served by a cached prepaid credential is server-"charged" (a use
+  // burned) but the wallet paid nothing — the line must say so instead of
+  // the misleading "Payment: charged" the smoke test flagged.
+  test("labels a no-payment call under a charged header as a prepaid burn", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      // No onPaid: the client presented a cached credential, paid nothing.
+      request: mock(async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "X-Bolthub-Payment": "charged" },
         }),
       ),
     } as any);
@@ -282,7 +308,8 @@ describe("handleCallApi", () => {
       l402Client,
     );
 
-    expect(result.content[0].text).toContain("Payment: charged (4xx answers are real responses and stay paid)");
+    expect(result.content[0].text).toContain("Payment: prepaid use burned (no new payment)");
+    expect(result.content[0].text).not.toContain("Payment: charged");
   });
 
   test("no payment line when the gateway does not emit the headers", async () => {
@@ -580,6 +607,38 @@ describe("handleRevokeToken", () => {
     const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("nothing to revoke");
+  });
+
+  // The gateway's revoke is idempotent: 200 + revoked=false means no active
+  // grant matched. Reporting that as success is how the smoke test believed
+  // a phantom credential's "revocation" had worked — it must error honestly,
+  // while still dropping the dead local credential and returning any named
+  // child-cap reservation so the budget can't stay locked.
+  test("reports revoked=false honestly instead of claiming success", async () => {
+    globalThis.fetch = mock(async () =>
+      new Response(JSON.stringify({ revoked: false, code: "token_revoked" }), { status: 200 }),
+    ) as any;
+    const dropped: string[] = [];
+    let rolledBack = 0;
+    const l402Client = makeL402Client({
+      getBundleCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
+      dropBundleCredential: mock((u: string) => { dropped.push(u); return true; }),
+      rollbackDelegatedCap: mock((n: number) => { rolledBack = n; }),
+      remainingBudget: 950,
+    } as any);
+
+    const result = await handleRevokeToken(
+      { slug: "test-api", path: "/v1/data", released_sats: 50 },
+      makeApiClient(),
+      l402Client,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("No active grant matched");
+    expect(result.content[0].text).not.toContain("Revoked the grant");
+    expect(dropped).toHaveLength(1); // stale local credential still dropped
+    expect(rolledBack).toBe(50); // reservation still returned
+    expect(result.content[0].text).toContain("Returned 50 sats");
   });
 
   test("surfaces a gateway error status", async () => {

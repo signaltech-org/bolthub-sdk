@@ -286,7 +286,7 @@ export async function handleCallApi(
     const text = await resp.text();
     const suffix = (callCost > 0
       ? `\n\n---\nCost: ${callCost} sats${budgetSummary(l402Client)}`
-      : budgetSummary(l402Client)) + paymentOutcomeLine(resp);
+      : budgetSummary(l402Client)) + paymentOutcomeLine(resp, callCost > 0);
 
     if (!resp.ok) {
       return {
@@ -517,6 +517,39 @@ export async function handleRevokeToken(
         isError: true,
       };
     }
+    // The gateway's revoke is idempotent: HTTP 200 with revoked=false means
+    // NO active grant matched this credential (already terminal, or never
+    // server-backed at all). Reporting that as a successful revoke would
+    // leave the caller believing a live credential was killed when nothing
+    // changed — say exactly what happened instead.
+    let revokedFlag: boolean | undefined;
+    try {
+      revokedFlag = ((await resp.clone().json()) as { revoked?: boolean })?.revoked;
+    } catch {
+      /* non-JSON body: fall through as unknown */
+    }
+    if (revokedFlag === false) {
+      l402Client.dropBundleCredential(endpointUrl);
+      // Still return any named child-cap reservation: the budget must not
+      // stay locked behind a credential that has no live grant.
+      let releasedNote = "";
+      if (args.released_sats && args.released_sats > 0) {
+        l402Client.rollbackDelegatedCap(args.released_sats);
+        releasedNote = ` Returned ${args.released_sats} sats of reserved child budget (${l402Client.remainingBudget} remaining).`;
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `No active grant matched this credential for ${args.slug}${args.path} — nothing was revoked. ` +
+              `Either it was already revoked/expired, or the credential was never backed by a server-side grant. ` +
+              `The local credential has been dropped either way.${releasedNote}`,
+          },
+        ],
+        isError: true,
+      };
+    }
     // Stop presenting the now-dead credential locally, and return any child-cap
     // budget the caller reserved for descendants of this grant.
     l402Client.dropBundleCredential(endpointUrl);
@@ -570,15 +603,23 @@ function prettyJson(text: string): string {
  * `refunded_to_balance` means the origin kept failing — the key fact for a
  * retry loop is that re-sending costs nothing. Empty when the gateway
  * didn't emit the headers (flag off / older gateway).
+ *
+ * paidThisCall distinguishes the two ways a call can be server-"charged":
+ * a fresh Lightning payment (the client's wallet paid this call) vs a
+ * prepaid credential drawing down (bundle use burned — no new payment).
+ * The gateway can't tell the client's wallet activity, so the client-side
+ * fact wins the wording.
  */
-function paymentOutcomeLine(resp: Response): string {
+function paymentOutcomeLine(resp: Response, paidThisCall: boolean): string {
   const status = readPaymentStatus(resp.headers);
   if (!status) return "";
   switch (status.state) {
-    case "charged":
+    case "charged": {
+      const how = paidThisCall ? "charged" : "prepaid use burned (no new payment)";
       return resp.ok
-        ? "\nPayment: charged"
-        : "\nPayment: charged (4xx answers are real responses and stay paid)";
+        ? `\nPayment: ${how}`
+        : `\nPayment: ${how} (4xx answers are real responses and stay paid)`;
+    }
     case "reverted":
       return "\nPayment: reverted — NOT lost; re-sending this exact call is free (no new payment)";
     case "refunded_to_balance":

@@ -324,10 +324,10 @@ Options for receipts export:
   --file <path>           Ledger path (default: ~/.bolthub/receipts.jsonl)
 
 Environment:
-  PHOENIXD_URL + PHOENIXD_PASSWORD     Recommended wallet
-  LND_REST_HOST + LND_MACAROON        Fastest wallet
-  LNBITS_URL + LNBITS_ADMIN_KEY       LNbits wallet
-  NWC_URI                              Easiest wallet (slower)
+  LND_REST_HOST + LND_MACAROON        Recommended wallet (fastest)
+  NWC_URI                              Easiest setup (slower)
+  LNBITS_URL + LNBITS_ADMIN_KEY       LNbits (alternative)
+  PHOENIXD_URL + PHOENIXD_PASSWORD     Phoenixd (if you already run it)
 
 Examples:
   bolthub search bitcoin

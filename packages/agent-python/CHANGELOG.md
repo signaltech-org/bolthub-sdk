@@ -4,6 +4,15 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-07-10
+
+### Changed
+
+- Docs: the README now documents `buy_bundle`, receipts (`export_receipts` /
+  `FileReceiptStore` / `verify_receipt`), and free retries on origin failure, and
+  adds them to the API reference. Wallet adapters already listed LND-first. No API
+  changes.
+
 ## [0.5.0] - 2026-07-10
 
 ### Added

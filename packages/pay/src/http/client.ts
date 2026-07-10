@@ -262,8 +262,9 @@ export class L402Client {
       fetchOptions.body,
     );
     if (challengeResp.status !== 402) {
-      // A bundles-disabled endpoint answers 200/other with the header ignored;
-      // a bad size answers 400 with a message naming the available sizes.
+      // The gateway refuses an explicit bundle request it can't honor with a
+      // structured 400 (bundle_unavailable / a bad size names the available
+      // sizes) — surface its message.
       let detail = "";
       try {
         detail = ((await challengeResp.clone().json()) as { error?: string })?.error ?? "";
@@ -272,6 +273,27 @@ export class L402Client {
       }
       throw new L402Error(
         `buyBundle: endpoint did not offer this bundle (HTTP ${challengeResp.status}${detail ? `: ${detail}` : ""})`,
+      );
+    }
+
+    // The server is the authority on what this invoice buys: an HONORED
+    // bundle challenge echoes `bundleUses` in the 402 body. No echo (or a
+    // different size) means the server minted a plain single-use invoice —
+    // paying it and caching it as a bundle would be a phantom purchase that
+    // silently reverts to per-call payment after one use. Refuse BEFORE the
+    // wallet is touched.
+    let echoedUses: number | undefined;
+    try {
+      const body = (await challengeResp.clone().json()) as { bundleUses?: number };
+      if (typeof body?.bundleUses === "number") echoedUses = body.bundleUses;
+    } catch {
+      /* non-JSON body: treated as no echo */
+    }
+    if (echoedUses !== uses) {
+      throw new L402Error(
+        echoedUses === undefined
+          ? "buyBundle: the server did not honor the bundle request (no bundleUses in the challenge) — bundles may not be enabled on this endpoint; nothing was paid"
+          : `buyBundle: the server offered a ${echoedUses}-use bundle, not the ${uses} requested; nothing was paid`,
       );
     }
 
@@ -415,7 +437,23 @@ export class L402Client {
 
     const challenge = this.parseChallenge(resp);
     if (!challenge) {
-      throw new L402Error("Failed to parse L402 challenge from 402 response");
+      // A 402 without a parseable challenge is usually a STRUCTURED REFUSAL
+      // of a presented credential (bundle_exhausted / bundle_expired /
+      // token_revoked / not_bundle_backed), not a malformed challenge —
+      // surface the server's own code and message so an agent gets the
+      // deterministic "stop, don't retry" answer instead of a parse error.
+      let refusal = "";
+      try {
+        const body = (await resp.clone().json()) as { error?: string; code?: string };
+        if (body?.error) refusal = body.code ? `${body.error} [${body.code}]` : body.error;
+      } catch {
+        /* non-JSON body */
+      }
+      throw new L402Error(
+        refusal
+          ? `Payment refused: ${refusal}`
+          : "Failed to parse L402 challenge from 402 response",
+      );
     }
 
     const amountSats = await this.extractAmount(resp, challenge.invoice);
