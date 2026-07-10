@@ -16,6 +16,7 @@ from ._engine import (
     L402BudgetError,
     L402Error,
     extract_amount,
+    host_key,
     parse_challenge,
     response_amount_sats,
     retry_after_seconds,
@@ -31,6 +32,11 @@ from .wallets import WalletAdapter
 # Re-exported for backwards compatibility: callers may import these from
 # ``bolthub.client`` directly.
 __all__ = ["L402Client", "L402Error", "L402BudgetError"]
+
+# Prepaid credit is tenant-scoped, cached per HOST (not host+path). The gateway's
+# 402 (credit spent/expired) is the authoritative invalidation; this 30-day floor
+# just stops a definitely-dead credential being re-sent forever.
+_CREDIT_CREDENTIAL_TTL = 30 * 24 * 60 * 60
 
 
 @dataclass
@@ -197,6 +203,8 @@ class L402Client:
         self._receipt_store = receipt_store
         self._client = httpx.Client(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
+        # Prepaid-credit credentials by HOST: (macaroon, preimage, expires_at).
+        self._credit_store: dict[str, tuple[str, str, float]] = {}
 
     @property
     def total_spent(self) -> int:
@@ -255,6 +263,143 @@ class L402Client:
             "cross-endpoint prepayment. See https://docs.bolthub.ai/docs/sdks/python"
         )
 
+    def clear_credits(self) -> None:
+        """Drop all cached prepaid-credit credentials."""
+        self._credit_store.clear()
+
+    def buy_credit(
+        self,
+        url: str,
+        credit_sats: int,
+        *,
+        method: str = "GET",
+        max_cost_sats: int | None = None,
+        on_paid: Optional[Callable[[dict], None]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Buy prepaid credit for a provider: pay once for ``credit_sats`` of
+        credit (face-value — the server charges exactly that, no discount
+        tiers), then :meth:`request` calls to ANY of that provider's endpoints
+        draw the budget instead of paying, until spent. Credit is tenant-scoped,
+        cached and reused per host. Sends ``X-Bolthub-Credit: <credit_sats>``,
+        verifies the server honored the exact budget, then pays (``budget_sats``
+        + ``max_cost_sats`` enforced). Raises :class:`L402Error` if the provider
+        did not answer with a credit challenge, or did not echo the requested
+        budget — nothing is paid in either case."""
+        if not isinstance(credit_sats, int) or credit_sats <= 0:
+            raise L402Error("buy_credit: credit_sats must be a positive integer")
+
+        headers = dict(kwargs.get("headers", {}))
+        headers["X-Bolthub-Credit"] = str(credit_sats)
+        kw = {**kwargs, "headers": headers}
+
+        resp = self._request_retrying_429(method, url, **kw)
+        if resp.status_code != 402:
+            detail = ""
+            try:
+                detail = (resp.json() or {}).get("error", "")
+            except Exception:
+                pass
+            raise L402Error(
+                f"buy_credit: provider did not offer prepaid credit (HTTP {resp.status_code}"
+                + (f": {detail}" if detail else "")
+                + ")"
+            )
+
+        # SECURITY: the server is the authority on the honored budget. An honored
+        # credit challenge echoes ``creditSats`` (== the requested face-value
+        # budget) in the 402 body. No echo (or a different value) means the server
+        # did not open credit for this amount — paying it and caching it as credit
+        # would be a phantom purchase. Refuse BEFORE the wallet is touched.
+        echoed: int | None = None
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            val = body.get("creditSats")
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                echoed = int(val)
+        if echoed != credit_sats:
+            if echoed is None:
+                raise L402Error(
+                    "buy_credit: the server did not honor the credit request (no "
+                    "creditSats in the challenge) — prepaid credit may not be enabled "
+                    "for this provider; nothing was paid"
+                )
+            raise L402Error(
+                f"buy_credit: the server honored {echoed} sats of credit, not the "
+                f"{credit_sats} requested; nothing was paid"
+            )
+
+        challenge = parse_challenge(resp.headers.get("www-authenticate"))
+        if challenge is None:
+            raise L402Error("buy_credit: failed to parse the credit challenge")
+        macaroon, invoice = challenge
+
+        amount = self._extract_amount(resp, invoice)
+        charge = self._budget_tracker.reserve(amount, max_cost_sats=max_cost_sats)
+        try:
+            preimage = self._wallet.pay_invoice(invoice)
+        except Exception:
+            self._budget_tracker.rollback(charge)
+            raise
+
+        self._credit_store[host_key(url)] = (
+            macaroon,
+            preimage,
+            time.time() + _CREDIT_CREDENTIAL_TTL,
+        )
+
+        payment_hash = _response_payment_hash(resp)
+        if self._on_paid is not None or on_paid is not None:
+            info = {
+                "scheme": "l402",
+                "amount": charge,
+                "asset": "sat",
+                "resource": url,
+                "preimage": preimage,
+                "invoice": invoice,
+                "payment_hash": payment_hash,
+            }
+            if self._on_paid is not None:
+                self._on_paid(info)
+            if on_paid is not None:
+                on_paid(info)
+        _record_receipt(
+            self._receipt_store,
+            method=method,
+            url=url,
+            charge=charge,
+            preimage=preimage,
+            invoice=invoice,
+            payment_hash=payment_hash,
+            resp=resp,
+        )
+        return {"credit_sats": credit_sats, "host": host_key(url)}
+
+    def batch_fetch(
+        self,
+        urls: list[str],
+        *,
+        credit_sats: int,
+        method: str = "GET",
+        **kwargs: Any,
+    ) -> list[httpx.Response]:
+        """Fetch several URLs, collapsing the Lightning payments to ONE per
+        provider. Groups by host; for each host without cached credit, buys
+        ``credit_sats`` once, then fetches each URL (drawing that credit).
+        Non-custodial: N providers means N payments, never a pooled balance.
+        Size ``credit_sats`` to cover the calls you expect to make per provider;
+        unused credit at expiry is non-refundable."""
+        hosts = list(dict.fromkeys(host_key(u) for u in urls))
+        for h in hosts:
+            held = self._credit_store.get(h)
+            if held is None or held[2] <= time.time():
+                seed = next(u for u in urls if host_key(u) == h)
+                self.buy_credit(seed, credit_sats, method=method, **kwargs)
+        return [self.request(method, u, **kwargs) for u in urls]
+
     def request(
         self,
         method: str,
@@ -271,6 +416,25 @@ class L402Client:
         callback, letting callers attribute an exact cost to this call.
         """
         skey = session_key(url)
+
+        # Prepaid credit: present a cached credential for this host first (draws
+        # the prepaid budget, no payment) on ANY of the provider's endpoints. A
+        # 402 means the credit is spent — drop it and fall through to the normal
+        # session / single-use flow.
+        hkey = host_key(url)
+        credit = self._credit_store.get(hkey)
+        if credit is not None:
+            macaroon_c, preimage_c, expires_c = credit
+            if expires_c > time.time():
+                headers = dict(kwargs.get("headers", {}))
+                headers["Authorization"] = f"L402 {macaroon_c}:{preimage_c}"
+                kw = {**kwargs, "headers": headers}
+                resp = self._request_retrying_upstream(method, url, **kw)
+                if resp.status_code != 402:
+                    return resp
+                del self._credit_store[hkey]
+            else:
+                del self._credit_store[hkey]
 
         session = self._store.get(skey)
 

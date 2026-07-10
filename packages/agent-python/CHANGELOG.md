@@ -4,6 +4,19 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-10
+
+### Added
+
+- **Prepaid credit (cross-endpoint, face-value).** `buy_credit(url, credit_sats,
+  ...)` on `L402Client` and `AsyncL402Client` pays once for a sats budget
+  spendable across all of one provider's `per_request` endpoints; later calls to
+  that provider draw it with no further payment. `batch_fetch(urls,
+  credit_sats=...)` groups by provider and buys one credit per provider (N
+  providers = N payments, non-custodial). `clear_credits()` manages the per-host
+  cache. Credit is face-value (no discount); `buy_credit` verifies the server
+  echoed the requested budget before paying.
+
 ## [0.6.0] - 2026-07-10
 
 ### Removed

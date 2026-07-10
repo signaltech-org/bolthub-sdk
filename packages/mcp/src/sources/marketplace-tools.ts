@@ -306,12 +306,66 @@ export async function handleCallApi(
 }
 
 /**
- * Handle the `mint_scoped_token` MCP tool — attenuate the multi-use credential
- * the server already holds for an endpoint into a tighter child, offline, so a
- * sub-agent can be handed a scoped, capped credential without re-paying or ever
- * seeing the parent's wallet (AF-D5). The child is just a macaroon: the worker
- * spends it with a plain L402 client / `call_api`, and the gateway enforces
- * every cap. Attenuation is tighten-only, so the child can never widen scope.
+ * Handle the `buy_credit` MCP tool — pay once for prepaid credit spendable
+ * across ALL of a provider's endpoints (cross-endpoint prepaid credit). After
+ * this, call_api to any of that provider's endpoints draws the credit with no
+ * new payment. Credit is face-value (the server charges exactly the requested
+ * amount) and per-provider: buying credit for one provider never covers another
+ * (that would require a pooled/custodial balance, which bolthub never holds).
+ */
+export async function handleBuyCredit(
+  args: { slug: string; path: string; credit_sats: number; max_cost_sats?: number },
+  apiClient: ApiClient,
+  l402Client: L402Client | undefined,
+): Promise<ToolResult> {
+  if (!l402Client) {
+    return {
+      content: [{ type: "text", text: `Buying credit requires a wallet.\n${WALLET_ENV_HINT}` }],
+      isError: true,
+    };
+  }
+  try {
+    const url = apiClient.getGatewayUrl(args.slug, args.path);
+    const maxCost = args.max_cost_sats && args.max_cost_sats > 0 ? args.max_cost_sats : undefined;
+    let cost = 0;
+    const result = await l402Client.buyCredit(url, args.credit_sats, {
+      maxCostSats: maxCost,
+      onPaid: (info) => {
+        cost = info.amount;
+      },
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Bought ${result.creditSats} sats of prepaid credit for ${args.slug}. Cost: ${cost} sats.${budgetSummary(l402Client)}\n` +
+            `call_api requests to ANY of ${args.slug}'s endpoints now draw this credit (no new payment) until it runs out.`,
+        },
+      ],
+    };
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error buying credit: ${err instanceof Error ? err.message : String(err)}${budgetSummary(l402Client)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
+/**
+ * Handle the `mint_scoped_token` MCP tool — attenuate the prepaid-credit
+ * credential the session already holds for this provider into a tighter child,
+ * offline, so a sub-agent can be handed a scoped, capped credential without
+ * re-paying or ever seeing the parent's wallet (AF-D5). The child is just a
+ * macaroon: the worker spends it with a plain L402 client / `call_api`, and the
+ * gateway enforces every cap. Attenuation is tighten-only, so the child can
+ * never widen scope. Credit is tenant-scoped, so a credit credential bought for
+ * the provider is delegable for any of its endpoints — `buy_credit` first.
  */
 export async function handleMintScopedToken(
   args: {
@@ -332,15 +386,16 @@ export async function handleMintScopedToken(
     };
   }
   const url = apiClient.getGatewayUrl(args.slug, args.path);
-  const cred = l402Client.getBundleCredential(url);
+  const cred = l402Client.getCreditCredential(url);
   if (!cred) {
     return {
       content: [
         {
           type: "text",
           text:
-            `No delegable credential is held for ${args.slug}${args.path}. Delegation attenuates a ` +
-            `multi-use credential you already hold for this endpoint. ` +
+            `No delegable credential is held for ${args.slug}. Delegation attenuates a ` +
+            `prepaid-credit credential you already hold for the provider: buy_credit for ${args.slug} first, ` +
+            `then mint a scoped child from it. ` +
             `(A single-use per_request payment is spent in the same call, so there is nothing cached to hand on.)`,
         },
       ],
@@ -444,15 +499,15 @@ export async function handleRevokeToken(
     };
   }
   const endpointUrl = apiClient.getGatewayUrl(args.slug, args.path);
-  const cred = l402Client.getBundleCredential(endpointUrl);
+  const cred = l402Client.getCreditCredential(endpointUrl);
   if (!cred) {
     return {
       content: [
         {
           type: "text",
           text:
-            `No credential is held for ${args.slug}${args.path}, so there is nothing to revoke here. ` +
-            `revoke_token kills the grant behind a bundle this session bought (and every child minted from it).`,
+            `No credential is held for ${args.slug}, so there is nothing to revoke here. ` +
+            `revoke_token kills the grant behind the prepaid credit this session bought (and every child minted from it).`,
         },
       ],
       isError: true,
@@ -484,7 +539,7 @@ export async function handleRevokeToken(
       /* non-JSON body: fall through as unknown */
     }
     if (revokedFlag === false) {
-      l402Client.dropBundleCredential(endpointUrl);
+      l402Client.dropCreditCredential(endpointUrl);
       // Still return any named child-cap reservation: the budget must not
       // stay locked behind a credential that has no live grant.
       let releasedNote = "";
@@ -507,7 +562,7 @@ export async function handleRevokeToken(
     }
     // Stop presenting the now-dead credential locally, and return any child-cap
     // budget the caller reserved for descendants of this grant.
-    l402Client.dropBundleCredential(endpointUrl);
+    l402Client.dropCreditCredential(endpointUrl);
     let released = "";
     if (args.released_sats && args.released_sats > 0) {
       l402Client.rollbackDelegatedCap(args.released_sats);

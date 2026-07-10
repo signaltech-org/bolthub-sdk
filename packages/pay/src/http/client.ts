@@ -9,6 +9,12 @@ import { readPaymentStatus, type PaymentStatus } from "./payment-status";
 /** Lifecycle stage reported via {@link L402ClientOptions.onStage}. */
 export type L402Stage = "invoice" | "paying" | "loading";
 
+// Prepaid credit is tenant-scoped, so its credential is cached per HOST (every
+// one of a provider's endpoints shares it), not per host+path. The gateway's
+// 402 (credit spent/expired) is the authoritative invalidation; this 30-day
+// floor just stops a definitely-dead credential being re-sent forever.
+const CREDIT_CREDENTIAL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 /** Snapshot of a cached session token returned by {@link L402Client.getSessions}. */
 interface SessionInfo {
   token: string;
@@ -69,10 +75,10 @@ export class L402Client {
   private onPaid?: L402ClientOptions["onPaid"];
   private store: SessionStore;
   private receiptStore?: ReceiptStore;
-  // Prepaid-bundle credentials by host+path: after buyBundle pays once, its
-  // (macaroon:preimage) proof is presented on each subsequent request to burn
-  // a use instead of paying again, until the gateway 402s (bundle exhausted).
-  private bundleStore = new Map<string, { macaroon: string; preimage: string; expiresAt: number }>();
+  // Prepaid-credit credentials by HOST (the settlement group): after buyCredit
+  // pays once, its (macaroon:preimage) is presented on every request to any of
+  // that provider's endpoints, drawing the prepaid budget with no new payment.
+  private creditStore = new Map<string, { macaroon: string; preimage: string; expiresAt: number }>();
 
   constructor(options: L402ClientOptions) {
     if (options.budget && options.budgetSats !== undefined) {
@@ -187,41 +193,35 @@ export class L402Client {
     return this.request(url, { ...options, method: "POST" });
   }
 
-  /** Drop all cached bundle credentials. */
-  clearBundles(): void {
-    this.bundleStore.clear();
-  }
-
   /**
-   * Drop the cached bundle credential for one endpoint (e.g. after revoking its
-   * grant, so the client stops presenting a dead token). Returns true if one
-   * was cached.
+   * Drop the cached prepaid-credit credential for `url`'s provider (e.g. after
+   * revoking its grant, so the client stops presenting a dead token). Returns
+   * true if one was cached.
    */
-  dropBundleCredential(url: string, params?: Record<string, string>): boolean {
-    let finalUrl = url;
-    if (params) finalUrl = `${url}?${new URLSearchParams(params).toString()}`;
-    return this.bundleStore.delete(this.getSessionKey(finalUrl));
+  dropCreditCredential(url: string): boolean {
+    return this.creditStore.delete(this.getHostKey(url));
   }
 
   /**
-   * Return the active prepaid-bundle credential cached for `url`
+   * Return the active prepaid-credit credential held for `url`'s provider
    * (`{ macaroon, preimage }`), or `undefined` if none is cached or it has
-   * expired. This is the multi-use L402 credential a caller can delegate: hand
+   * expired. This is the multi-use L402 credential a caller delegates: hand
    * `macaroon` to {@link attenuate} to mint a scoped child, then give the child
-   * macaroon plus this same `preimage` to a sub-agent. A single-payment
-   * per_request credential is spent in the same request it's minted, so there
-   * is nothing cached to delegate — buy a bundle first.
+   * macaroon plus this same `preimage` to a sub-agent. Credit is tenant-scoped
+   * (per host), so a credential bought for the provider is delegable for any of
+   * its endpoints. A single-payment per_request credential is spent in the same
+   * request it's minted, so there is nothing cached to delegate — buy credit
+   * first.
    */
-  getBundleCredential(url: string, params?: Record<string, string>): { macaroon: string; preimage: string } | undefined {
-    let finalUrl = url;
-    if (params) finalUrl = `${url}?${new URLSearchParams(params).toString()}`;
-    const bundle = this.bundleStore.get(this.getSessionKey(finalUrl));
-    if (!bundle) return undefined;
-    if (bundle.expiresAt <= Date.now()) {
-      this.bundleStore.delete(this.getSessionKey(finalUrl));
+  getCreditCredential(url: string): { macaroon: string; preimage: string } | undefined {
+    const key = this.getHostKey(url);
+    const credit = this.creditStore.get(key);
+    if (!credit) return undefined;
+    if (credit.expiresAt <= Date.now()) {
+      this.creditStore.delete(key);
       return undefined;
     }
-    return { macaroon: bundle.macaroon, preimage: bundle.preimage };
+    return { macaroon: credit.macaroon, preimage: credit.preimage };
   }
 
   /**
@@ -234,6 +234,160 @@ export class L402Client {
       "buyBundle is retired: pay per call, or use prepaid credit for cross-endpoint " +
         "prepayment. See https://docs.bolthub.ai/docs/sdks/pay",
     );
+  }
+
+  /** Drop all cached prepaid-credit credentials. */
+  clearCredits(): void {
+    this.creditStore.clear();
+  }
+
+  /**
+   * Buy prepaid credit for a provider: pay once for `creditSats` of credit
+   * (face-value — the server charges exactly that, there are no discount
+   * tiers), then subsequent {@link request} calls to ANY of that provider's
+   * endpoints draw the budget instead of paying, until it's spent. Credit is
+   * tenant-scoped, so it's cached and reused per host.
+   *
+   * Sends an `X-Bolthub-Credit: <creditSats>` request, verifies the server
+   * honored the exact budget, pays the credit invoice (enforcing the budget and
+   * `maxCostSats`), and caches the credential by host. Throws {@link L402Error}
+   * if the provider did not answer with a credit challenge, or did not echo the
+   * requested budget — nothing is paid in either case.
+   */
+  async buyCredit(
+    url: string,
+    creditSats: number,
+    options: L402RequestOptions = {},
+  ): Promise<{ creditSats: number; host: string }> {
+    if (!Number.isInteger(creditSats) || creditSats <= 0) {
+      throw new L402Error("buyCredit: creditSats must be a positive integer");
+    }
+    const { params, maxCostSats, onPaid, ...fetchOptions } = options;
+    let finalUrl = url;
+    if (params) finalUrl = `${url}?${new URLSearchParams(params).toString()}`;
+
+    const headers = new Headers(fetchOptions.headers);
+    headers.set("X-Bolthub-Credit", String(creditSats));
+
+    this.onStage?.("invoice");
+    const challengeResp = await this.fetchRetrying429(
+      () => fetch(finalUrl, { ...fetchOptions, headers, signal: AbortSignal.timeout(this.timeoutMs) }),
+      fetchOptions.body,
+    );
+    if (challengeResp.status !== 402) {
+      // The gateway refuses a credit request it can't honor with a structured
+      // non-402 (e.g. prepaid credit not enabled for this provider) — surface
+      // its message.
+      let detail = "";
+      try {
+        detail = ((await challengeResp.clone().json()) as { error?: string })?.error ?? "";
+      } catch {
+        /* non-JSON body */
+      }
+      throw new L402Error(
+        `buyCredit: provider did not offer prepaid credit (HTTP ${challengeResp.status}${detail ? `: ${detail}` : ""})`,
+      );
+    }
+
+    // SECURITY: the server is the authority on the honored budget. An HONORED
+    // credit challenge echoes `creditSats` in the 402 body, equal to the
+    // face-value budget requested. No echo (or a different value) means the
+    // server did not open credit for this amount — paying it and caching it as
+    // credit would be a phantom purchase that silently reverts to per-call
+    // payment. Refuse BEFORE the wallet is ever touched.
+    let echoedCredit: number | undefined;
+    try {
+      const body = (await challengeResp.clone().json()) as { creditSats?: number };
+      if (typeof body?.creditSats === "number") echoedCredit = body.creditSats;
+    } catch {
+      /* non-JSON body: treated as no echo */
+    }
+    if (echoedCredit !== creditSats) {
+      throw new L402Error(
+        echoedCredit === undefined
+          ? "buyCredit: the server did not honor the credit request (no creditSats in the challenge) — prepaid credit may not be enabled for this provider; nothing was paid"
+          : `buyCredit: the server honored ${echoedCredit} sats of credit, not the ${creditSats} requested; nothing was paid`,
+      );
+    }
+
+    const challenge = this.parseChallenge(challengeResp);
+    if (!challenge) throw new L402Error("buyCredit: failed to parse the credit challenge");
+
+    const amount = await this.extractAmount(challengeResp, challenge.invoice);
+    const charge = this.resolveCharge(amount, maxCostSats);
+    this.reserveCharge(charge);
+
+    this.onStage?.("paying");
+    let preimage: string;
+    try {
+      ({ preimage } = await this.payInvoiceWithRetry(challenge.invoice));
+    } catch (err) {
+      this.rollbackCharge(charge);
+      throw new L402PaymentError(err instanceof Error ? err.message : "Payment failed", { cause: err });
+    }
+
+    const host = this.getHostKey(finalUrl);
+    this.creditStore.set(host, {
+      macaroon: challenge.macaroon,
+      preimage,
+      expiresAt: Date.now() + CREDIT_CREDENTIAL_TTL_MS,
+    });
+
+    const paidInfo = {
+      scheme: "l402" as const,
+      amount: charge,
+      asset: "sat" as const,
+      resource: finalUrl,
+      preimage,
+      invoice: challenge.invoice,
+      paymentHash: await this.extractPaymentHash(challengeResp),
+    };
+    this.onPaid?.(paidInfo);
+    onPaid?.(paidInfo);
+    this.recordReceipt(paidInfo, fetchOptions.method, challengeResp);
+    this.onStage?.("loading");
+
+    return { creditSats, host };
+  }
+
+  /**
+   * Fetch several URLs, collapsing the Lightning payments to ONE per provider.
+   * URLs are grouped by settlement group (host); for each group without cached
+   * credit, `creditSats` of credit is bought once, then every URL is fetched
+   * concurrently (bounded by `concurrency`, default 6) drawing that credit.
+   *
+   * Non-custodial by construction: N providers means N payments, never one
+   * pooled balance. Provide `creditSats` sized to cover the calls you expect to
+   * make to each provider (sum their per-call prices, with headroom). Unused
+   * credit at expiry is non-refundable, so size it to expected use.
+   */
+  async batchFetch(
+    urls: string[],
+    options: { creditSats: number; concurrency?: number } & L402RequestOptions,
+  ): Promise<Response[]> {
+    const { creditSats, concurrency = 6, ...reqOptions } = options;
+    // One credit purchase per host that doesn't already hold credit.
+    const hosts = [...new Set(urls.map((u) => this.getHostKey(u)))];
+    for (const host of hosts) {
+      const held = this.creditStore.get(host);
+      if (!held || held.expiresAt <= Date.now()) {
+        // Buy against the first URL for this host (any endpoint mints the credit).
+        const seed = urls.find((u) => this.getHostKey(u) === host)!;
+        await this.buyCredit(seed, creditSats, reqOptions);
+      }
+    }
+    // Fetch all URLs, bounded concurrency; each draws its host's credit.
+    const results = new Array<Response>(urls.length);
+    let next = 0;
+    const worker = async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= urls.length) return;
+        results[i] = await this.request(urls[i], reqOptions);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, urls.length) }, worker));
+    return results;
   }
 
   /**
@@ -254,6 +408,33 @@ export class L402Client {
     }
 
     const sessionKey = this.getSessionKey(finalUrl);
+
+    // Prepaid credit: if a credit credential is cached for this host, present it
+    // (draws the prepaid budget, no payment) on ANY of the provider's
+    // endpoints. A 402 means the credit is spent — drop it and fall through to
+    // the normal session / single-use flow.
+    const creditKey = this.getHostKey(finalUrl);
+    const credit = this.creditStore.get(creditKey);
+    if (credit && credit.expiresAt > Date.now()) {
+      const headers = new Headers(fetchOptions.headers);
+      headers.set("Authorization", `L402 ${credit.macaroon}:${credit.preimage}`);
+      try {
+        const resp = await this.fetchRetryingUpstream(
+          () => fetch(finalUrl, { ...fetchOptions, headers, signal: AbortSignal.timeout(this.timeoutMs) }),
+          fetchOptions.body,
+          finalUrl,
+        );
+        if (resp.status !== 402) return resp;
+        this.creditStore.delete(creditKey);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "TimeoutError") {
+          throw new L402TimeoutError("Request timed out");
+        }
+        throw err;
+      }
+    } else if (credit) {
+      this.creditStore.delete(creditKey); // expired
+    }
 
     const existingSession = this.store.get(sessionKey);
 
@@ -496,6 +677,16 @@ export class L402Client {
     try {
       const parsed = new URL(url);
       return `${parsed.host}${parsed.pathname}`;
+    } catch {
+      return url;
+    }
+  }
+
+  // Prepaid credit is scoped to the settlement group; today that is the gateway
+  // host (one host = one tenant). Credentials are cached and grouped by it.
+  private getHostKey(url: string): string {
+    try {
+      return new URL(url).host;
     } catch {
       return url;
     }

@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, afterEach } from "bun:test";
-import { handleSearchApis, handleGetApiDetails, handlePreviewCost, handleCallApi, handleMintScopedToken, handleRevokeToken } from "../sources/marketplace-tools";
+import { handleSearchApis, handleGetApiDetails, handlePreviewCost, handleCallApi, handleBuyCredit, handleMintScopedToken, handleRevokeToken } from "../sources/marketplace-tools";
 import type { ApiClient, DirectoryEntry } from "../sources/api-client";
 import type { L402Client } from "@bolthub/pay";
 
@@ -372,6 +372,88 @@ describe("handleCallApi", () => {
 });
 
 
+describe("handleBuyCredit", () => {
+  test("buys credit and reports the cost + cross-endpoint reuse hint", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      buyCredit: mock(async (_url: string, creditSats: number, opts: { onPaid?: (i: { amount: number }) => void }) => {
+        opts.onPaid?.({ amount: 8000 });
+        return { creditSats, host: "test-api.gw.bolthub.ai" };
+      }),
+    } as any);
+
+    const result = await handleBuyCredit(
+      { slug: "test-api", path: "/v1/data", credit_sats: 10000 },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("10000 sats of prepaid credit");
+    expect(result.content[0].text).toContain("Cost: 8000 sats");
+    expect(result.content[0].text).toContain("ANY of test-api's endpoints");
+  });
+
+  test("surfaces a refusal message when credit is unavailable", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      buyCredit: mock(async () => {
+        throw new Error("buyCredit: provider did not offer prepaid credit (HTTP 400: Prepaid credit is not enabled for this provider)");
+      }),
+    } as any);
+    const result = await handleBuyCredit(
+      { slug: "test-api", path: "/v1/data", credit_sats: 25000 },
+      apiClient,
+      l402Client,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not enabled for this provider");
+  });
+
+  test("surfaces the security refusal when the server does not echo the budget", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      buyCredit: mock(async () => {
+        throw new Error("buyCredit: the server did not honor the credit request (no creditSats in the challenge) — prepaid credit may not be enabled for this provider; nothing was paid");
+      }),
+    } as any);
+    const result = await handleBuyCredit(
+      { slug: "test-api", path: "/v1/data", credit_sats: 10000 },
+      apiClient,
+      l402Client,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("nothing was paid");
+  });
+
+  test("errors when no wallet is configured", async () => {
+    const result = await handleBuyCredit(
+      { slug: "test-api", path: "/v1/data", credit_sats: 10000 },
+      makeApiClient(),
+      undefined,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("requires a wallet");
+  });
+
+  test("passes max_cost_sats through to buyCredit", async () => {
+    const apiClient = makeApiClient();
+    let capturedOpts: { maxCostSats?: number } = {};
+    const l402Client = makeL402Client({
+      buyCredit: mock(async (_url: string, creditSats: number, opts: { maxCostSats?: number }) => {
+        capturedOpts = opts;
+        return { creditSats, host: "h" };
+      }),
+    } as any);
+    await handleBuyCredit(
+      { slug: "test-api", path: "/v1/data", credit_sats: 10000, max_cost_sats: 5000 },
+      apiClient,
+      l402Client,
+    );
+    expect(capturedOpts.maxCostSats).toBe(5000);
+  });
+});
+
 // A real gateway macaroon (header + 4 binding caveats + signature), the value
 // attenuate() operates on. Same fixture as the @bolthub/pay delegate tests.
 const GATEWAY_MACAROON =
@@ -380,13 +462,13 @@ const GATEWAY_MACAROON =
 describe("handleMintScopedToken", () => {
   function clientHolding(cred?: { macaroon: string; preimage: string }): L402Client {
     return makeL402Client({
-      getBundleCredential: mock(() => cred),
+      getCreditCredential: mock(() => cred),
       reserveDelegatedCap: mock(() => {}),
       remainingBudget: 1000,
     } as any);
   }
 
-  test("attenuates the held bundle credential into a scoped child", async () => {
+  test("attenuates the held credit credential into a scoped child", async () => {
     const apiClient = makeApiClient();
     const l402Client = clientHolding({ macaroon: GATEWAY_MACAROON, preimage: "beef" });
 
@@ -450,7 +532,7 @@ describe("handleMintScopedToken", () => {
   test("reserves spend_cap_sats from the parent budget on a successful mint", async () => {
     let reserved = 0;
     const l402Client = makeL402Client({
-      getBundleCredential: mock(() => ({ macaroon: GATEWAY_MACAROON, preimage: "beef" })),
+      getCreditCredential: mock(() => ({ macaroon: GATEWAY_MACAROON, preimage: "beef" })),
       reserveDelegatedCap: mock((sats: number) => { reserved = sats; }),
       remainingBudget: 700,
     } as any);
@@ -467,7 +549,7 @@ describe("handleMintScopedToken", () => {
 
   test("refuses a child cap over the parent's remaining budget, minting nothing", async () => {
     const l402Client = makeL402Client({
-      getBundleCredential: mock(() => ({ macaroon: GATEWAY_MACAROON, preimage: "beef" })),
+      getCreditCredential: mock(() => ({ macaroon: GATEWAY_MACAROON, preimage: "beef" })),
       reserveDelegatedCap: mock(() => { throw new Error("Delegated cap 1001 sats exceeds remaining budget 1000"); }),
       remainingBudget: 1000,
     } as any);
@@ -501,8 +583,8 @@ describe("handleRevokeToken", () => {
 
     const dropped: string[] = [];
     const l402Client = makeL402Client({
-      getBundleCredential: mock(() => ({ macaroon: "childmac", preimage: "beef" })),
-      dropBundleCredential: mock((u: string) => { dropped.push(u); return true; }),
+      getCreditCredential: mock(() => ({ macaroon: "childmac", preimage: "beef" })),
+      dropCreditCredential: mock((u: string) => { dropped.push(u); return true; }),
     } as any);
 
     const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
@@ -518,8 +600,8 @@ describe("handleRevokeToken", () => {
     globalThis.fetch = mock(async () => new Response("{}", { status: 200 })) as any;
     let rolledBack = 0;
     const l402Client = makeL402Client({
-      getBundleCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
-      dropBundleCredential: mock(() => true),
+      getCreditCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
+      dropCreditCredential: mock(() => true),
       rollbackDelegatedCap: mock((n: number) => { rolledBack = n; }),
       remainingBudget: 800,
     } as any);
@@ -534,7 +616,7 @@ describe("handleRevokeToken", () => {
   });
 
   test("errors when no credential is held for the endpoint", async () => {
-    const l402Client = makeL402Client({ getBundleCredential: mock(() => undefined) } as any);
+    const l402Client = makeL402Client({ getCreditCredential: mock(() => undefined) } as any);
     const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("nothing to revoke");
@@ -552,8 +634,8 @@ describe("handleRevokeToken", () => {
     const dropped: string[] = [];
     let rolledBack = 0;
     const l402Client = makeL402Client({
-      getBundleCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
-      dropBundleCredential: mock((u: string) => { dropped.push(u); return true; }),
+      getCreditCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
+      dropCreditCredential: mock((u: string) => { dropped.push(u); return true; }),
       rollbackDelegatedCap: mock((n: number) => { rolledBack = n; }),
       remainingBudget: 950,
     } as any);
@@ -575,7 +657,7 @@ describe("handleRevokeToken", () => {
   test("surfaces a gateway error status", async () => {
     globalThis.fetch = mock(async () => new Response("nope", { status: 404 })) as any;
     const l402Client = makeL402Client({
-      getBundleCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
+      getCreditCredential: mock(() => ({ macaroon: "m", preimage: "beef" })),
     } as any);
     const result = await handleRevokeToken({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
     expect(result.isError).toBe(true);

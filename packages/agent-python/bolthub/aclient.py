@@ -14,6 +14,7 @@ from ._engine import (
     BudgetTracker,
     L402Error,
     extract_amount,
+    host_key,
     parse_challenge,
     response_amount_sats,
     retry_after_seconds,
@@ -24,6 +25,7 @@ from .payment_status import UpstreamFailedError, read_payment_status
 from .awallets import SyncWalletAdapter
 from .budget import Budget
 from .client import (
+    _CREDIT_CREDENTIAL_TTL,
     _SessionInfo,
     _record_receipt,
     _response_payment_hash,
@@ -99,6 +101,8 @@ class AsyncL402Client:
         self._receipt_store = receipt_store
         self._client = httpx.AsyncClient(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
+        # Prepaid-credit credentials by HOST: (macaroon, preimage, expires_at).
+        self._credit_store: dict[str, tuple[str, str, float]] = {}
 
     @property
     def total_spent(self) -> int:
@@ -156,6 +160,135 @@ class AsyncL402Client:
             "cross-endpoint prepayment. See https://docs.bolthub.ai/docs/sdks/python"
         )
 
+    def clear_credits(self) -> None:
+        """Drop all cached prepaid-credit credentials."""
+        self._credit_store.clear()
+
+    async def buy_credit(
+        self,
+        url: str,
+        credit_sats: int,
+        *,
+        method: str = "GET",
+        max_cost_sats: int | None = None,
+        on_paid: Optional[Callable[[dict], None]] = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Async mirror of :meth:`L402Client.buy_credit`: pay once for
+        ``credit_sats`` of a provider's credit (face-value, no discount tiers),
+        then :meth:`request` draws it across any of that provider's endpoints
+        (cached per host) until spent. Verifies the server echoed the exact
+        budget before paying; raises :class:`L402Error` and pays nothing on no
+        echo or a mismatch."""
+        if not isinstance(credit_sats, int) or credit_sats <= 0:
+            raise L402Error("buy_credit: credit_sats must be a positive integer")
+
+        headers = dict(kwargs.get("headers", {}))
+        headers["X-Bolthub-Credit"] = str(credit_sats)
+        kw = {**kwargs, "headers": headers}
+
+        resp = await self._request_retrying_429(method, url, **kw)
+        if resp.status_code != 402:
+            detail = ""
+            try:
+                detail = (resp.json() or {}).get("error", "")
+            except Exception:
+                pass
+            raise L402Error(
+                f"buy_credit: provider did not offer prepaid credit (HTTP {resp.status_code}"
+                + (f": {detail}" if detail else "")
+                + ")"
+            )
+
+        # SECURITY: verify the server honored the exact budget before paying (see
+        # ``L402Client.buy_credit``). No ``creditSats`` echo, or a different
+        # value, means the server did not open credit — refuse before the wallet.
+        echoed: int | None = None
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        if isinstance(body, dict):
+            val = body.get("creditSats")
+            if isinstance(val, (int, float)) and not isinstance(val, bool):
+                echoed = int(val)
+        if echoed != credit_sats:
+            if echoed is None:
+                raise L402Error(
+                    "buy_credit: the server did not honor the credit request (no "
+                    "creditSats in the challenge) — prepaid credit may not be enabled "
+                    "for this provider; nothing was paid"
+                )
+            raise L402Error(
+                f"buy_credit: the server honored {echoed} sats of credit, not the "
+                f"{credit_sats} requested; nothing was paid"
+            )
+
+        challenge = parse_challenge(resp.headers.get("www-authenticate"))
+        if challenge is None:
+            raise L402Error("buy_credit: failed to parse the credit challenge")
+        macaroon, invoice = challenge
+
+        amount = self._extract_amount(resp, invoice)
+        charge = self._budget_tracker.reserve(amount, max_cost_sats=max_cost_sats)
+        try:
+            preimage = await self._wallet.pay_invoice(invoice)
+        except BaseException:
+            self._budget_tracker.rollback(charge)
+            raise
+
+        self._credit_store[host_key(url)] = (
+            macaroon,
+            preimage,
+            time.time() + _CREDIT_CREDENTIAL_TTL,
+        )
+
+        payment_hash = _response_payment_hash(resp)
+        if self._on_paid is not None or on_paid is not None:
+            info = {
+                "scheme": "l402",
+                "amount": charge,
+                "asset": "sat",
+                "resource": url,
+                "preimage": preimage,
+                "invoice": invoice,
+                "payment_hash": payment_hash,
+            }
+            if self._on_paid is not None:
+                self._on_paid(info)
+            if on_paid is not None:
+                on_paid(info)
+        _record_receipt(
+            self._receipt_store,
+            method=method,
+            url=url,
+            charge=charge,
+            preimage=preimage,
+            invoice=invoice,
+            payment_hash=payment_hash,
+            resp=resp,
+        )
+        return {"credit_sats": credit_sats, "host": host_key(url)}
+
+    async def batch_fetch(
+        self,
+        urls: list[str],
+        *,
+        credit_sats: int,
+        method: str = "GET",
+        **kwargs: Any,
+    ) -> list[httpx.Response]:
+        """Async mirror of :meth:`L402Client.batch_fetch`: one credit purchase
+        per provider, then the URLs are fetched concurrently, each drawing its
+        host's credit. Non-custodial: N providers means N payments."""
+        hosts = list(dict.fromkeys(host_key(u) for u in urls))
+        for h in hosts:
+            held = self._credit_store.get(h)
+            if held is None or held[2] <= time.time():
+                seed = next(u for u in urls if host_key(u) == h)
+                await self.buy_credit(seed, credit_sats, method=method, **kwargs)
+        return list(await asyncio.gather(*(self.request(method, u, **kwargs) for u in urls)))
+
     async def request(
         self,
         method: str,
@@ -172,6 +305,24 @@ class AsyncL402Client:
         callback, letting callers attribute an exact cost to this call.
         """
         skey = session_key(url)
+
+        # Prepaid credit: present a cached credential for this host first (draws
+        # the prepaid budget, no payment) on ANY of the provider's endpoints. A
+        # 402 means the credit is spent — drop it and fall through.
+        hkey = host_key(url)
+        credit = self._credit_store.get(hkey)
+        if credit is not None:
+            macaroon_c, preimage_c, expires_c = credit
+            if expires_c > time.time():
+                headers = dict(kwargs.get("headers", {}))
+                headers["Authorization"] = f"L402 {macaroon_c}:{preimage_c}"
+                kw = {**kwargs, "headers": headers}
+                resp = await self._request_retrying_upstream(method, url, **kw)
+                if resp.status_code != 402:
+                    return resp
+                del self._credit_store[hkey]
+            else:
+                del self._credit_store[hkey]
 
         session = self._store.get(skey)
 

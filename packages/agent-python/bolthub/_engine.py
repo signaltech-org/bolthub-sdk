@@ -72,6 +72,12 @@ def session_key(url: str) -> str:
     return f"{parsed.netloc}{parsed.path}"
 
 
+def host_key(url: str) -> str:
+    """Cache key for prepaid credit: the host only (``<netloc>``). Credit is
+    tenant-scoped, so one credential covers all of a provider's endpoints."""
+    return urlparse(url).netloc
+
+
 def retry_after_seconds(headers: Mapping[str, str]) -> float | None:
     """Parse a ``Retry-After`` header (delta-seconds or HTTP-date) into
     seconds to wait, or ``None`` when absent or unparseable."""

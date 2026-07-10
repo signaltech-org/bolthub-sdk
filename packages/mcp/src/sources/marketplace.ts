@@ -17,6 +17,7 @@ import {
   handleGetApiDetails,
   handlePreviewCost,
   handleCallApi,
+  handleBuyCredit,
   handleMintScopedToken,
   handleRevokeToken,
 } from "./marketplace-tools.js";
@@ -102,6 +103,24 @@ const TOOLS: SourceTool[] = [
         },
       },
       required: ["slug", "path"],
+    },
+  },
+  {
+    name: "buy_credit",
+    description:
+      "Buy prepaid CREDIT for a bolthub provider: pay ONCE for a sats budget spendable across ALL of that provider's endpoints, then call_api to any of them draws the credit with no further Lightning payment until it runs out. Use this when you'll call SEVERAL of one provider's endpoints — sum their costs and buy that much credit in one payment. Credit is face-value (the provider charges exactly the sats you ask for, no discount tiers) and per-provider: it never covers a different provider (you'd buy separate credit for each). Unused credit at expiry is non-refundable, so size it to what you expect to spend.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "The provider's API slug (e.g. 'btc-intel')" },
+        path: { type: "string", description: "Any endpoint path of the provider to buy against (e.g. '/v1/history/candles'); the credit covers all of the provider's endpoints" },
+        credit_sats: { type: "number", description: "Amount of credit to buy in sats (charged at face value)" },
+        max_cost_sats: {
+          type: "number",
+          description: "Maximum sats to pay for the credit. If the price exceeds this, the purchase is refused and nothing is paid.",
+        },
+      },
+      required: ["slug", "path", "credit_sats"],
     },
   },
   {
@@ -214,6 +233,12 @@ export class MarketplaceSource implements ToolSource {
       case "call_api":
         return handleCallApi(
           args as Parameters<typeof handleCallApi>[0],
+          this.apiClient,
+          l402Client,
+        );
+      case "buy_credit":
+        return handleBuyCredit(
+          args as Parameters<typeof handleBuyCredit>[0],
           this.apiClient,
           l402Client,
         );

@@ -4,6 +4,24 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-10
+
+### Added
+
+- **Prepaid credit (cross-endpoint, face-value).** `L402Client.buyCredit(url,
+  creditSats, opts)` pays once for a sats budget spendable across ALL of one
+  provider's `per_request` endpoints; subsequent calls to that provider's host
+  draw the budget with no further payment. `batchFetch(urls, { creditSats })`
+  groups URLs by provider and buys one credit per provider (N providers = N
+  payments, never a pooled balance — non-custodial). `clearCredits()` manages
+  the per-host credential cache. Credit is face-value (no discount); `buyCredit`
+  verifies the server echoed the requested budget before the wallet is touched.
+- **Delegation re-homed onto credit.** `getCreditCredential(url)` /
+  `dropCreditCredential(url)` expose the held credit credential for a provider,
+  so `attenuate()` (and the MCP `mint_scoped_token`) narrows a credit token into
+  a scoped child. The retired bundle credential store and its accessors
+  (`getBundleCredential`/`dropBundleCredential`/`clearBundles`) are removed.
+
 ## [0.6.0] - 2026-07-10
 
 ### Removed
