@@ -17,7 +17,6 @@ import {
   handleGetApiDetails,
   handlePreviewCost,
   handleCallApi,
-  handleBuyBundle,
   handleMintScopedToken,
   handleRevokeToken,
 } from "./marketplace-tools.js";
@@ -106,27 +105,9 @@ const TOOLS: SourceTool[] = [
     },
   },
   {
-    name: "buy_bundle",
-    description:
-      "Buy a prepaid bundle for a bolthub API endpoint: pay ONCE for a set number of requests, then call_api uses them with no further Lightning payment until the bundle runs out. Amortizes the 1–3s payment latency across many calls — worthwhile when you'll make many requests to the same endpoint. Only endpoints the seller has enabled for bundles accept this; the error names the available sizes if the one you ask for isn't offered.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        slug: { type: "string", description: "The API slug (e.g. 'btc-intel')" },
-        path: { type: "string", description: "The endpoint path the bundle is for (e.g. '/v1/history/candles')" },
-        uses: { type: "number", description: "Number of requests to buy (must match a size the endpoint offers)" },
-        max_cost_sats: {
-          type: "number",
-          description: "Maximum sats to pay for the bundle. If the bundle price exceeds this, the purchase is refused and nothing is paid.",
-        },
-      },
-      required: ["slug", "path", "uses"],
-    },
-  },
-  {
     name: "mint_scoped_token",
     description:
-      "Mint a scoped, capped child credential from a prepaid bundle you already hold for an endpoint, to hand to a sub-agent. Attenuates OFFLINE (no payment, no round-trip): the child is a normal L402 token the worker spends with call_api or a plain client, and the gateway enforces every cap. Attenuation is tighten-only — a child can never widen scope or exceed the parent's remaining uses/sats. Give at least one restriction. Requires buy_bundle for this endpoint first (a single-use payment has nothing to delegate). Revoke the whole tree with revoke_token.",
+      "Mint a scoped, capped child credential from a multi-use credential you already hold for an endpoint, to hand to a sub-agent. Attenuates OFFLINE (no payment, no round-trip): the child is a normal L402 token the worker spends with call_api or a plain client, and the gateway enforces every cap. Attenuation is tighten-only — a child can never widen scope or exceed the parent's remaining uses/sats. Give at least one restriction. Requires a held multi-use credential for this endpoint (a single-use payment has nothing to delegate). Revoke the whole tree with revoke_token.",
     inputSchema: {
       type: "object",
       properties: {
@@ -233,12 +214,6 @@ export class MarketplaceSource implements ToolSource {
       case "call_api":
         return handleCallApi(
           args as Parameters<typeof handleCallApi>[0],
-          this.apiClient,
-          l402Client,
-        );
-      case "buy_bundle":
-        return handleBuyBundle(
-          args as Parameters<typeof handleBuyBundle>[0],
           this.apiClient,
           l402Client,
         );

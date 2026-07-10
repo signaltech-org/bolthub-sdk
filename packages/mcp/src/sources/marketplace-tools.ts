@@ -305,51 +305,6 @@ export async function handleCallApi(
   }
 }
 
-/** Handle the `buy_bundle` MCP tool — pay once for an N-use prepaid bundle. */
-export async function handleBuyBundle(
-  args: { slug: string; path: string; uses: number; max_cost_sats?: number },
-  apiClient: ApiClient,
-  l402Client: L402Client | undefined,
-): Promise<ToolResult> {
-  if (!l402Client) {
-    return {
-      content: [{ type: "text", text: `Buying a bundle requires a wallet.\n${WALLET_ENV_HINT}` }],
-      isError: true,
-    };
-  }
-  try {
-    const url = apiClient.getGatewayUrl(args.slug, args.path);
-    const maxCost = args.max_cost_sats && args.max_cost_sats > 0 ? args.max_cost_sats : undefined;
-    let cost = 0;
-    const result = await l402Client.buyBundle(url, args.uses, {
-      maxCostSats: maxCost,
-      onPaid: (info) => {
-        cost = info.amount;
-      },
-    });
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Bought a ${result.uses}-use bundle for ${args.slug}${args.path}. Cost: ${cost} sats.${budgetSummary(l402Client)}\n` +
-            `call_api requests to this endpoint now use the bundle (no new payment) until it runs out.`,
-        },
-      ],
-    };
-  } catch (err) {
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Error buying bundle: ${err instanceof Error ? err.message : String(err)}${budgetSummary(l402Client)}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-}
-
 /**
  * Handle the `mint_scoped_token` MCP tool — attenuate the multi-use credential
  * the server already holds for an endpoint into a tighter child, offline, so a
@@ -385,7 +340,7 @@ export async function handleMintScopedToken(
           type: "text",
           text:
             `No delegable credential is held for ${args.slug}${args.path}. Delegation attenuates a ` +
-            `multi-use bundle credential: buy_bundle for this endpoint first, then mint a scoped child from it. ` +
+            `multi-use credential you already hold for this endpoint. ` +
             `(A single-use per_request payment is spent in the same call, so there is nothing cached to hand on.)`,
         },
       ],

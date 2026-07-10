@@ -4,6 +4,18 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-10
+
+### Removed
+
+- **BREAKING: prepaid bundles are retired.** `buyBundle` is now a deprecated
+  stub that throws and pays nothing; the request path no longer presents a
+  cached bundle credential, and the `X-Bolthub-Bundle` flow is gone. Use
+  per-call payment, or prepaid credit for cross-endpoint prepayment when it
+  lands. Rationale: bundles duplicated the `token_bucket` pricing model and the
+  cross-endpoint prepaid-credit concept. Scoped delegation (`attenuate`) and the
+  grant-backed credential store are unchanged.
+
 ## [0.5.1] - 2026-07-10
 
 ### Changed

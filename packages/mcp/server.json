@@ -9,13 +9,13 @@
     "subfolder": "packages/mcp"
   },
   "websiteUrl": "https://docs.bolthub.ai/docs/sdks/mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@bolthub/mcp",
-      "version": "0.2.1",
+      "version": "0.3.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {

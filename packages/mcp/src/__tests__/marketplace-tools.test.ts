@@ -1,5 +1,5 @@
 import { describe, test, expect, mock, afterEach } from "bun:test";
-import { handleSearchApis, handleGetApiDetails, handlePreviewCost, handleCallApi, handleBuyBundle, handleMintScopedToken, handleRevokeToken } from "../sources/marketplace-tools";
+import { handleSearchApis, handleGetApiDetails, handlePreviewCost, handleCallApi, handleMintScopedToken, handleRevokeToken } from "../sources/marketplace-tools";
 import type { ApiClient, DirectoryEntry } from "../sources/api-client";
 import type { L402Client } from "@bolthub/pay";
 
@@ -371,75 +371,6 @@ describe("handleCallApi", () => {
   });
 });
 
-describe("handleBuyBundle", () => {
-  test("buys a bundle and reports the cost + reuse hint", async () => {
-    const apiClient = makeApiClient();
-    const l402Client = makeL402Client({
-      buyBundle: mock(async (_url: string, uses: number, opts: { onPaid?: (i: { amount: number }) => void }) => {
-        opts.onPaid?.({ amount: 8000 });
-        return { uses, resource: "https://test-api.gw.bolthub.ai/v1/data" };
-      }),
-    } as any);
-
-    const result = await handleBuyBundle(
-      { slug: "test-api", path: "/v1/data", uses: 100 },
-      apiClient,
-      l402Client,
-    );
-
-    expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain("100-use bundle");
-    expect(result.content[0].text).toContain("Cost: 8000 sats");
-    expect(result.content[0].text).toContain("no new payment");
-  });
-
-  test("surfaces the server error (e.g. bad size) as an error result", async () => {
-    const apiClient = makeApiClient();
-    const l402Client = makeL402Client({
-      buyBundle: mock(async () => {
-        throw new Error("buyBundle: endpoint did not offer this bundle (HTTP 400: No 250-use bundle. Available sizes: 100, 500)");
-      }),
-    } as any);
-
-    const result = await handleBuyBundle(
-      { slug: "test-api", path: "/v1/data", uses: 250 },
-      apiClient,
-      l402Client,
-    );
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("Available sizes: 100, 500");
-  });
-
-  test("errors when no wallet is configured", async () => {
-    const apiClient = makeApiClient();
-    const result = await handleBuyBundle(
-      { slug: "test-api", path: "/v1/data", uses: 100 },
-      apiClient,
-      undefined,
-    );
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("requires a wallet");
-  });
-
-  test("passes max_cost_sats through to buyBundle", async () => {
-    const apiClient = makeApiClient();
-    let capturedOpts: { maxCostSats?: number } = {};
-    const l402Client = makeL402Client({
-      buyBundle: mock(async (_url: string, uses: number, opts: { maxCostSats?: number }) => {
-        capturedOpts = opts;
-        return { uses, resource: "u" };
-      }),
-    } as any);
-
-    await handleBuyBundle(
-      { slug: "test-api", path: "/v1/data", uses: 100, max_cost_sats: 5000 },
-      apiClient,
-      l402Client,
-    );
-    expect(capturedOpts.maxCostSats).toBe(5000);
-  });
-});
 
 // A real gateway macaroon (header + 4 binding caveats + signature), the value
 // attenuate() operates on. Same fixture as the @bolthub/pay delegate tests.
@@ -475,14 +406,14 @@ describe("handleMintScopedToken", () => {
     expect(() => atob(m![1])).not.toThrow();
   });
 
-  test("errors when no bundle credential is held (buy_bundle first)", async () => {
+  test("errors when no delegable credential is held", async () => {
     const result = await handleMintScopedToken(
       { slug: "test-api", path: "/v1/data", n_uses: 10 },
       makeApiClient(),
       clientHolding(undefined),
     );
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("buy_bundle");
+    expect(result.content[0].text).toContain("No delegable credential");
   });
 
   test("errors when no wallet is configured", async () => {

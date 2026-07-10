@@ -4,6 +4,17 @@ All notable changes to the `bolthub` Python SDK are documented here. The format
 is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-10
+
+### Removed
+
+- **BREAKING: prepaid bundles are retired.** `buy_bundle` (sync and async) is
+  now a deprecated stub that raises `L402Error` and pays nothing; the request
+  path no longer presents a cached bundle credential, and the internal bundle
+  store is gone. Use per-call payment, or prepaid credit for cross-endpoint
+  prepayment when it lands. Bundles duplicated the `token_bucket` pricing model
+  and prepaid credit. Scoped delegation (`attenuate`) is unchanged.
+
 ## [0.5.1] - 2026-07-10
 
 ### Changed

@@ -9,12 +9,6 @@ import { readPaymentStatus, type PaymentStatus } from "./payment-status";
 /** Lifecycle stage reported via {@link L402ClientOptions.onStage}. */
 export type L402Stage = "invoice" | "paying" | "loading";
 
-// How long a bought bundle credential is presented before the client stops
-// trying it. Matches the gateway's 30-day bundle-macaroon TTL; the gateway's
-// 402 (bundle spent/expired) is the authoritative invalidation, this is just
-// a client-side floor so a definitely-dead credential isn't re-sent forever.
-const BUNDLE_CREDENTIAL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
 /** Snapshot of a cached session token returned by {@link L402Client.getSessions}. */
 interface SessionInfo {
   token: string;
@@ -231,109 +225,15 @@ export class L402Client {
   }
 
   /**
-   * Buy a prepaid bundle: pay once for a `uses`-request credential on a
-   * bundles-enabled endpoint, then subsequent {@link request} calls to that
-   * endpoint burn a use instead of paying (until the bundle is spent).
-   *
-   * Sends an `X-Bolthub-Bundle: <uses>` request, pays the bundle invoice
-   * (enforcing the budget and `maxCostSats` exactly like a normal payment),
-   * and caches the credential. Throws {@link L402Error} if the endpoint did
-   * not answer with a bundle challenge (e.g. bundles aren't enabled there, or
-   * the size isn't offered — the server's message is included).
+   * @deprecated Prepaid bundles are retired. Pay per call, or use prepaid
+   * credit (cross-endpoint prepayment) when it lands. This method now throws
+   * and pays nothing.
    */
-  async buyBundle(
-    url: string,
-    uses: number,
-    options: L402RequestOptions = {},
-  ): Promise<{ uses: number; resource: string }> {
-    if (!Number.isInteger(uses) || uses <= 0) {
-      throw new L402Error("buyBundle: uses must be a positive integer");
-    }
-    const { params, maxCostSats, onPaid, ...fetchOptions } = options;
-    let finalUrl = url;
-    if (params) finalUrl = `${url}?${new URLSearchParams(params).toString()}`;
-
-    const headers = new Headers(fetchOptions.headers);
-    headers.set("X-Bolthub-Bundle", String(uses));
-
-    this.onStage?.("invoice");
-    const challengeResp = await this.fetchRetrying429(
-      () => fetch(finalUrl, { ...fetchOptions, headers, signal: AbortSignal.timeout(this.timeoutMs) }),
-      fetchOptions.body,
+  async buyBundle(): Promise<never> {
+    throw new L402Error(
+      "buyBundle is retired: pay per call, or use prepaid credit for cross-endpoint " +
+        "prepayment. See https://docs.bolthub.ai/docs/sdks/pay",
     );
-    if (challengeResp.status !== 402) {
-      // The gateway refuses an explicit bundle request it can't honor with a
-      // structured 400 (bundle_unavailable / a bad size names the available
-      // sizes) — surface its message.
-      let detail = "";
-      try {
-        detail = ((await challengeResp.clone().json()) as { error?: string })?.error ?? "";
-      } catch {
-        /* non-JSON body */
-      }
-      throw new L402Error(
-        `buyBundle: endpoint did not offer this bundle (HTTP ${challengeResp.status}${detail ? `: ${detail}` : ""})`,
-      );
-    }
-
-    // The server is the authority on what this invoice buys: an HONORED
-    // bundle challenge echoes `bundleUses` in the 402 body. No echo (or a
-    // different size) means the server minted a plain single-use invoice —
-    // paying it and caching it as a bundle would be a phantom purchase that
-    // silently reverts to per-call payment after one use. Refuse BEFORE the
-    // wallet is touched.
-    let echoedUses: number | undefined;
-    try {
-      const body = (await challengeResp.clone().json()) as { bundleUses?: number };
-      if (typeof body?.bundleUses === "number") echoedUses = body.bundleUses;
-    } catch {
-      /* non-JSON body: treated as no echo */
-    }
-    if (echoedUses !== uses) {
-      throw new L402Error(
-        echoedUses === undefined
-          ? "buyBundle: the server did not honor the bundle request (no bundleUses in the challenge) — bundles may not be enabled on this endpoint; nothing was paid"
-          : `buyBundle: the server offered a ${echoedUses}-use bundle, not the ${uses} requested; nothing was paid`,
-      );
-    }
-
-    const challenge = this.parseChallenge(challengeResp);
-    if (!challenge) throw new L402Error("buyBundle: failed to parse the bundle challenge");
-
-    const amount = await this.extractAmount(challengeResp, challenge.invoice);
-    const charge = this.resolveCharge(amount, maxCostSats);
-    this.reserveCharge(charge);
-
-    this.onStage?.("paying");
-    let preimage: string;
-    try {
-      ({ preimage } = await this.payInvoiceWithRetry(challenge.invoice));
-    } catch (err) {
-      this.rollbackCharge(charge);
-      throw new L402PaymentError(err instanceof Error ? err.message : "Payment failed", { cause: err });
-    }
-
-    this.bundleStore.set(this.getSessionKey(finalUrl), {
-      macaroon: challenge.macaroon,
-      preimage,
-      expiresAt: Date.now() + BUNDLE_CREDENTIAL_TTL_MS,
-    });
-
-    const paidInfo = {
-      scheme: "l402" as const,
-      amount: charge,
-      asset: "sat" as const,
-      resource: finalUrl,
-      preimage,
-      invoice: challenge.invoice,
-      paymentHash: await this.extractPaymentHash(challengeResp),
-    };
-    this.onPaid?.(paidInfo);
-    onPaid?.(paidInfo);
-    this.recordReceipt(paidInfo, fetchOptions.method, challengeResp);
-    this.onStage?.("loading");
-
-    return { uses, resource: finalUrl };
   }
 
   /**
@@ -354,32 +254,6 @@ export class L402Client {
     }
 
     const sessionKey = this.getSessionKey(finalUrl);
-
-    // Prepaid bundle: if a bundle credential is cached for this endpoint,
-    // present it (burns a use, no payment). A 402 means the bundle is spent —
-    // drop it and fall through to the normal flow (which may re-buy or pay
-    // single-use).
-    const bundle = this.bundleStore.get(sessionKey);
-    if (bundle && bundle.expiresAt > Date.now()) {
-      const headers = new Headers(fetchOptions.headers);
-      headers.set("Authorization", `L402 ${bundle.macaroon}:${bundle.preimage}`);
-      try {
-        const resp = await this.fetchRetryingUpstream(
-          () => fetch(finalUrl, { ...fetchOptions, headers, signal: AbortSignal.timeout(this.timeoutMs) }),
-          fetchOptions.body,
-          finalUrl,
-        );
-        if (resp.status !== 402) return resp;
-        this.bundleStore.delete(sessionKey);
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "TimeoutError") {
-          throw new L402TimeoutError("Request timed out");
-        }
-        throw err;
-      }
-    } else if (bundle) {
-      this.bundleStore.delete(sessionKey); // expired
-    }
 
     const existingSession = this.store.get(sessionKey);
 

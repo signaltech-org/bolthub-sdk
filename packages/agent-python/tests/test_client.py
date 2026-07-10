@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 import httpx
 
 from bolthub import L402Client, L402Error, L402BudgetError

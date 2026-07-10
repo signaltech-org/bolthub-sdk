@@ -33,12 +33,6 @@ from .wallets import WalletAdapter
 __all__ = ["L402Client", "L402Error", "L402BudgetError"]
 
 
-# How long a bought bundle credential is presented before the client stops
-# trying it. Matches the gateway's 30-day bundle-macaroon TTL; the gateway's
-# 402 (spent/expired) is the authoritative invalidation.
-_BUNDLE_CREDENTIAL_TTL = 30 * 24 * 60 * 60
-
-
 @dataclass
 class _SessionInfo:
     token: str
@@ -203,8 +197,6 @@ class L402Client:
         self._receipt_store = receipt_store
         self._client = httpx.Client(timeout=timeout)
         self._store: SessionStore = session_store or InMemorySessionStore()
-        # Prepaid-bundle credentials by host+path: (macaroon, preimage, expires_at).
-        self._bundle_store: dict[str, tuple[str, str, float]] = {}
 
     @property
     def total_spent(self) -> int:
@@ -254,92 +246,14 @@ class L402Client:
         """Convenience wrapper around :meth:`request` with ``method="POST"``."""
         return self.request("POST", url, **kwargs)
 
-    def clear_bundles(self) -> None:
-        """Drop all cached bundle credentials."""
-        self._bundle_store.clear()
-
-    def buy_bundle(
-        self,
-        url: str,
-        uses: int,
-        *,
-        method: str = "GET",
-        max_cost_sats: int | None = None,
-        on_paid: Optional[Callable[[dict], None]] = None,
-        **kwargs: Any,
-    ) -> dict:
-        """Buy a prepaid bundle: pay once for ``uses`` requests, then
-        :meth:`request` calls to this endpoint burn a use instead of paying
-        (until the bundle is spent). Sends ``X-Bolthub-Bundle: <uses>``, pays
-        the bundle invoice (budget + ``max_cost_sats`` enforced), and caches
-        the credential. Raises :class:`L402Error` if the endpoint did not
-        answer with a bundle challenge (e.g. bundles disabled, or the size
-        isn't offered — the server's message is included)."""
-        if not isinstance(uses, int) or uses <= 0:
-            raise L402Error("buy_bundle: uses must be a positive integer")
-
-        headers = dict(kwargs.get("headers", {}))
-        headers["X-Bolthub-Bundle"] = str(uses)
-        kw = {**kwargs, "headers": headers}
-
-        resp = self._request_retrying_429(method, url, **kw)
-        if resp.status_code != 402:
-            detail = ""
-            try:
-                detail = (resp.json() or {}).get("error", "")
-            except Exception:
-                pass
-            raise L402Error(
-                f"buy_bundle: endpoint did not offer this bundle (HTTP {resp.status_code}"
-                + (f": {detail}" if detail else "")
-                + ")"
-            )
-
-        challenge = parse_challenge(resp.headers.get("www-authenticate"))
-        if challenge is None:
-            raise L402Error("buy_bundle: failed to parse the bundle challenge")
-        macaroon, invoice = challenge
-
-        amount = self._extract_amount(resp, invoice)
-        charge = self._budget_tracker.reserve(amount, max_cost_sats=max_cost_sats)
-        try:
-            preimage = self._wallet.pay_invoice(invoice)
-        except Exception:
-            self._budget_tracker.rollback(charge)
-            raise
-
-        self._bundle_store[session_key(url)] = (
-            macaroon,
-            preimage,
-            time.time() + _BUNDLE_CREDENTIAL_TTL,
+    def buy_bundle(self, *args: Any, **kwargs: Any) -> dict:
+        """Retired. Prepaid bundles have been removed; pay per call, or use
+        prepaid credit for cross-endpoint prepayment when it lands. This method
+        now raises and pays nothing."""
+        raise L402Error(
+            "buy_bundle is retired: pay per call, or use prepaid credit for "
+            "cross-endpoint prepayment. See https://docs.bolthub.ai/docs/sdks/python"
         )
-
-        payment_hash = _response_payment_hash(resp)
-        if self._on_paid is not None or on_paid is not None:
-            info = {
-                "scheme": "l402",
-                "amount": charge,
-                "asset": "sat",
-                "resource": url,
-                "preimage": preimage,
-                "invoice": invoice,
-                "payment_hash": payment_hash,
-            }
-            if self._on_paid is not None:
-                self._on_paid(info)
-            if on_paid is not None:
-                on_paid(info)
-        _record_receipt(
-            self._receipt_store,
-            method=method,
-            url=url,
-            charge=charge,
-            preimage=preimage,
-            invoice=invoice,
-            payment_hash=payment_hash,
-            resp=resp,
-        )
-        return {"uses": uses, "resource": url}
 
     def request(
         self,
@@ -357,23 +271,6 @@ class L402Client:
         callback, letting callers attribute an exact cost to this call.
         """
         skey = session_key(url)
-
-        # Prepaid bundle: present a cached credential first (burns a use, no
-        # payment). A 402 means spent — drop it and fall through to the normal
-        # session / single-use flow.
-        bundle = self._bundle_store.get(skey)
-        if bundle is not None:
-            macaroon_b, preimage_b, expires = bundle
-            if expires > time.time():
-                headers = dict(kwargs.get("headers", {}))
-                headers["Authorization"] = f"L402 {macaroon_b}:{preimage_b}"
-                kw = {**kwargs, "headers": headers}
-                resp = self._request_retrying_upstream(method, url, **kw)
-                if resp.status_code != 402:
-                    return resp
-                del self._bundle_store[skey]
-            else:
-                del self._bundle_store[skey]
 
         session = self._store.get(skey)
 

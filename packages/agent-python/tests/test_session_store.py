@@ -3,7 +3,6 @@ import shutil
 import tempfile
 import time
 
-import pytest
 
 from bolthub.session_store import (
     FileSessionStore,
