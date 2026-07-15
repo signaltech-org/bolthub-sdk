@@ -39,10 +39,10 @@ export interface WalletFromEnvOptions {
 /** Human-readable setup hint, for bins to print when no wallet is configured. */
 export const WALLET_ENV_HINT = [
   "Set one of the following to configure a wallet:",
-  "  PHOENIXD_URL + PHOENIXD_PASSWORD     (recommended, fast <200ms)",
-  "  LND_REST_HOST + LND_MACAROON         (fastest, <200ms)",
-  "  LNBITS_URL + LNBITS_ADMIN_KEY        (fast, <300ms)",
-  "  NWC_URI                              (easiest, but slower 1-3s)",
+  "  LND_REST_HOST + LND_MACAROON         (recommended, fastest <200ms)",
+  "  NWC_URI                              (easiest setup, slower 1-3s)",
+  "  LNBITS_URL + LNBITS_ADMIN_KEY        (alternative, <300ms)",
+  "  PHOENIXD_URL + PHOENIXD_PASSWORD     (alternative, if you already run it)",
 ].join("\n");
 
 export async function walletFromEnv(
