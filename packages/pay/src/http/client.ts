@@ -323,7 +323,7 @@ export class L402Client {
       ({ preimage } = await this.payInvoiceWithRetry(challenge.invoice));
     } catch (err) {
       this.rollbackCharge(charge);
-      throw new L402PaymentError(err instanceof Error ? err.message : "Payment failed", { cause: err });
+      throw new L402PaymentError(describePaymentFailure(err), { cause: err });
     }
 
     const host = this.getHostKey(finalUrl);
@@ -528,10 +528,7 @@ export class L402Client {
       preimage = result.preimage;
     } catch (err) {
       this.rollbackCharge(charge);
-      throw new L402PaymentError(
-        err instanceof Error ? err.message : "Payment failed",
-        { cause: err },
-      );
+      throw new L402PaymentError(describePaymentFailure(err), { cause: err });
     }
 
     const paidInfo = {
@@ -665,7 +662,23 @@ export class L402Client {
         await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1)));
       }
       try {
-        return await this.wallet.payInvoice(invoice);
+        const result = await this.wallet.payInvoice(invoice);
+        // A success-shaped response without a real preimage is a failed
+        // payment the adapter didn't catch (LND reports errors in-band;
+        // some NWC wallets resolve self-payment rejections this way).
+        // Unguarded, the charge stays reserved and the request goes out
+        // as `L402 <macaroon>:undefined` — a guaranteed 401 that looks
+        // like an auth bug while silently draining the session budget.
+        // Preimages are 32 bytes hex across every adapter, and retrying
+        // is safe: the same BOLT11 settles at most once.
+        if (!/^[0-9a-f]{64}$/i.test(result?.preimage ?? "")) {
+          throw new L402PaymentError(
+            "Wallet reported success but returned no valid payment preimage; treating the payment as failed. " +
+              "Common cause: the spending wallet is the same wallet (or node) that issued the invoice — Lightning cannot pay self-issued invoices. " +
+              "Nothing was counted against the session budget.",
+          );
+        }
+        return result;
       } catch (err) {
         lastErr = err;
       }
@@ -892,6 +905,26 @@ export class L402Client {
     if (this.budget) this.budget.rollback("sat", charge);
     else this.spentSats -= charge;
   }
+}
+
+/**
+ * Translate a raw wallet/node payment error into something an agent can
+ * act on (smoke-test finding M5). The raw message is preserved — callers
+ * and logs still see exactly what the wallet said — with the actionable
+ * reading appended for the common failure classes.
+ */
+export function describePaymentFailure(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? "Payment failed");
+  if (/unknown destination|unable to find a path|no[_ ]?route|not enough capacity/i.test(raw)) {
+    return `${raw} — the destination (the seller's wallet) can't be reached on the Lightning graph. It likely has no channels or no inbound liquidity (common for a brand-new node), or is offline.`;
+  }
+  if (/self[- ]?payment|pay.*own invoice|to self/i.test(raw)) {
+    return `${raw} — the spending wallet and the invoice issuer appear to be the same wallet. Lightning cannot pay self-issued invoices; use a different spending wallet.`;
+  }
+  if (/insufficient|not enough (balance|funds)/i.test(raw)) {
+    return `${raw} — the spending wallet doesn't have enough balance or outbound capacity for this amount.`;
+  }
+  return raw;
 }
 
 /** Base error for all L402-related failures. */

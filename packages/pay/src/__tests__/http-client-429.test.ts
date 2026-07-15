@@ -12,7 +12,7 @@ import { describe, test, expect, mock, afterEach } from "bun:test";
 import { L402Client } from "../http/client";
 import type { WalletAdapter } from "../http/types";
 
-function createMockWallet(preimage = "abc123"): WalletAdapter {
+function createMockWallet(preimage = "a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1"): WalletAdapter {
   return {
     payInvoice: mock(async () => ({ preimage })),
   };
@@ -65,7 +65,7 @@ describe("L402Client 429 handling", () => {
   });
 
   test("post-payment leg: retries with the SAME L402 proof, pays exactly once", async () => {
-    const wallet = createMockWallet("preimage123");
+    const wallet = createMockWallet("ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12");
     const client = new L402Client({ wallet });
     const calls = mockFetchRecording([
       challenge(),
@@ -78,8 +78,8 @@ describe("L402Client 429 handling", () => {
     expect(wallet.payInvoice).toHaveBeenCalledTimes(1);
 
     const authOf = (i: number) => new Headers(calls[i].init?.headers).get("Authorization");
-    expect(authOf(1)).toBe("L402 mac123:preimage123");
-    expect(authOf(2)).toBe("L402 mac123:preimage123");
+    expect(authOf(1)).toBe("L402 mac123:ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12");
+    expect(authOf(2)).toBe("L402 mac123:ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12");
   });
 
   test("session reuse leg: 429 is retried without dropping the session", async () => {

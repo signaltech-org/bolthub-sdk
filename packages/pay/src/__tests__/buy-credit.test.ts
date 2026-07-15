@@ -13,7 +13,7 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-function wallet(preimage = "beef"): WalletAdapter {
+function wallet(preimage = "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef"): WalletAdapter {
   return { payInvoice: mock(async () => ({ preimage })) };
 }
 
@@ -44,7 +44,7 @@ function creditChallenge(creditSats = 10000): Response {
 
 describe("buyCredit", () => {
   test("pays once, then reuses across DIFFERENT endpoints of the same provider", async () => {
-    const w = wallet("beef");
+    const w = wallet("beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
     const client = new L402Client({ wallet: w });
     const calls = scriptFetch([
       creditChallenge(), // buyCredit
@@ -61,8 +61,8 @@ describe("buyCredit", () => {
     expect(r1.status).toBe(200);
     expect(r2.status).toBe(200);
     expect(w.payInvoice).toHaveBeenCalledTimes(1); // ONE payment for both endpoints
-    expect(calls[1].auth).toBe("L402 creditmac:beef");
-    expect(calls[2].auth).toBe("L402 creditmac:beef");
+    expect(calls[1].auth).toBe("L402 creditmac:beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
+    expect(calls[2].auth).toBe("L402 creditmac:beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
   });
 
   test("does NOT reuse credit on a different provider (different host)", async () => {
@@ -81,7 +81,7 @@ describe("buyCredit", () => {
   });
 
   test("spent credit (402) drops and falls through to a single-use payment", async () => {
-    const w = wallet("beef");
+    const w = wallet("beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
     const client = new L402Client({ wallet: w });
     scriptFetch([
       creditChallenge(), // buy
@@ -158,7 +158,7 @@ describe("buyCredit", () => {
   });
 
   test("clearCredits drops the cached credential (next call pays again)", async () => {
-    const w = wallet("beef");
+    const w = wallet("beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
     const client = new L402Client({ wallet: w });
     scriptFetch([
       creditChallenge(), // buy
@@ -178,7 +178,7 @@ describe("buyCredit", () => {
 
 describe("batchFetch", () => {
   test("one payment per provider, then fetches every url", async () => {
-    const w = wallet("beef");
+    const w = wallet("beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
     const client = new L402Client({ wallet: w });
     // acme buy, then bolt buy, then 3 fetches — group by host: acme + bolt.
     // concurrency: 1 keeps the fetch order deterministic for counting.

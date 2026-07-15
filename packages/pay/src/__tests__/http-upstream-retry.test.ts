@@ -3,7 +3,7 @@ import { L402Client, UpstreamFailedError } from "../http/client";
 import { readPaymentStatus, PAYMENT_HEADER, PAYMENT_CODE_HEADER } from "../http/payment-status";
 import type { WalletAdapter } from "../http/types";
 
-function createMockWallet(preimage = "abc123"): WalletAdapter {
+function createMockWallet(preimage = "a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1"): WalletAdapter {
   return {
     payInvoice: mock(async () => ({ preimage })),
   };
@@ -65,7 +65,7 @@ describe("readPaymentStatus", () => {
 
 describe("upstream failure retry", () => {
   test("retries for free on upstream_failed_retryable and succeeds — single payment", async () => {
-    const wallet = createMockWallet("preimage123");
+    const wallet = createMockWallet("ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12");
     const client = new L402Client({ wallet });
 
     const fetchFn = mockFetch([

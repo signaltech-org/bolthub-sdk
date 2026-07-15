@@ -21,7 +21,7 @@ describe("LndWallet", () => {
       capturedHeaders = Object.fromEntries(new Headers(init.headers).entries());
       capturedBody = init.body;
       return new Response(
-        JSON.stringify({ result: { payment_preimage: "abc123" } }),
+        JSON.stringify({ result: { payment_preimage: "a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1" } }),
         { status: 200 },
       );
     }) as any;
@@ -34,7 +34,7 @@ describe("LndWallet", () => {
 
     const result = await wallet.payInvoice("lnbc1000...");
 
-    expect(result.preimage).toBe("abc123");
+    expect(result.preimage).toBe("a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1");
     expect(capturedUrl).toBe("https://lnd.example.com:8080/v2/router/send");
     expect(capturedHeaders["grpc-metadata-macaroon"]).toBe("deadbeef");
     expect(JSON.parse(capturedBody)).toEqual({

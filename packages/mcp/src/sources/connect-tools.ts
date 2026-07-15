@@ -81,6 +81,7 @@ async function pairingRequest<T>(baseUrl: string, path: string, body: unknown): 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
     const payload = (await res.json().catch(() => ({}))) as { error?: string };

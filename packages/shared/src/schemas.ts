@@ -118,6 +118,9 @@ export const billingCycleSchema = z.object({
   periodStart: z.string().datetime(),
   periodEnd: z.string().datetime().nullable(),
   requestCount: z.number().int().nonnegative(),
+  // Earnings observed for the cycle (input to the usage-fee cap). Optional
+  // with a default so payloads from rows predating migration 0032 parse.
+  settledSats: z.number().int().nonnegative().optional().default(0),
   baseFeeSats: z.number().int().nonnegative(),
   usageFeeSats: z.number().int().nonnegative(),
   totalDueSats: z.number().int().nonnegative(),

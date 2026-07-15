@@ -24,7 +24,7 @@ function createTool(overrides?: Partial<McpToolDefinition["meta"]>): McpToolDefi
   };
 }
 
-function createMockClient(preimage = "abc123") {
+function createMockClient(preimage = "a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1") {
   const wallet: WalletAdapter = { payInvoice: mock(async () => ({ preimage })) };
   return { client: new L402Client({ wallet }), wallet };
 }
@@ -44,7 +44,7 @@ describe("executeToolCall", () => {
   });
 
   test("handles 402 -> pay -> retry flow", async () => {
-    const { client, wallet } = createMockClient("preimage_paid");
+    const { client, wallet } = createMockClient("0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e0d1e");
     let callCount = 0;
     globalThis.fetch = mock(async () => {
       callCount++;

@@ -20,13 +20,13 @@ afterEach(() => {
 describe("delegation consuming side (AF-D7)", () => {
   test("a second client spends a child token via plain get() with no payment", async () => {
     // Parent narrows its credential offline and hands (child, same preimage) on.
-    const preimage = "beef";
+    const preimage = "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef";
     const child = attenuate(GATEWAY_MACAROON, { nUses: 5, pathPrefix: "/v1/data" });
     const childCred = `L402 ${child}:${preimage}`;
 
     // A different process: fresh client, its own wallet that must never fire,
     // no cached bundle/session, and no idea the credential is a delegated child.
-    const wallet: WalletAdapter = { payInvoice: mock(async () => ({ preimage: "unused" })) };
+    const wallet: WalletAdapter = { payInvoice: mock(async () => ({ preimage: "cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe" })) };
     const worker = new L402Client({ wallet });
 
     // Gateway stand-in: 200 iff the child credential is presented, else 402.

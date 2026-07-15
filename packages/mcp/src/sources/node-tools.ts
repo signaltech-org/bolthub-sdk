@@ -94,6 +94,36 @@ function providerMenu(): string {
   ].join("\n");
 }
 
+/**
+ * The provider/price menu, annotated with which providers already have a
+ * stored credential (L4: a returning user with several credentials must
+ * still get the price comparison before being asked to pick an opaque
+ * credential id). Providers seen only in stored credentials (retired from
+ * the static catalog) are appended so their credentials stay reachable.
+ */
+function providerMenuWithStored(credentials: StoredCredential[]): string {
+  const byProvider = new Map<string, number>();
+  for (const c of credentials) {
+    byProvider.set(c.provider, (byProvider.get(c.provider) ?? 0) + 1);
+  }
+  const storedMark = (slug: string): string => {
+    const n = byProvider.get(slug);
+    return n ? ` [${n} stored credential${n > 1 ? "s" : ""}]` : "";
+  };
+  const catalogSlugs = new Set(VPS_PROVIDERS.map((p) => p.slug));
+  const extras = [...byProvider.keys()].filter((slug) => !catalogSlugs.has(slug));
+  return [
+    "Pick a VPS provider first (prices for comparison; your server, your keys — bolthub never holds funds):",
+    "",
+    ...VPS_PROVIDERS.map(
+      (p) => `  ${p.slug.padEnd(13)} ${p.name} — from ${p.priceFrom} (${p.note})${storedMark(p.slug)}`,
+    ),
+    ...extras.map((slug) => `  ${slug.padEnd(13)} (stored credential only)${storedMark(slug)}`),
+    "",
+    "Re-run deploy_node with provider set. A provider with one stored credential deploys with it automatically; with several I'll list them to pick by credential_id.",
+  ].join("\n");
+}
+
 function providerTokenGuide(slug: string): string | null {
   const p = VPS_PROVIDERS.find((x) => x.slug === slug);
   if (!p) return null;
@@ -179,9 +209,15 @@ export async function handleDeployNode(
         return { content: [{ type: "text", text: guide }] };
       }
       if (matching.length > 1) {
+        // Provider unset: pick the provider (with prices) before asking the
+        // user to choose between opaque credential ids (L4). Provider set:
+        // disambiguate its credentials.
+        if (!args.provider) {
+          return { content: [{ type: "text", text: providerMenuWithStored(credentials) }] };
+        }
         return errorText(
           [
-            "Several stored credentials — re-run with credential_id set to one of:",
+            `Several stored credentials for ${args.provider} — re-run with credential_id set to one of:`,
             ...matching.map(credentialLine),
           ].join("\n"),
         );
@@ -289,7 +325,7 @@ export async function handleDeployNode(
             `Monthly cost: ${cost}`,
             ``,
             `The node will be ready in about 5 minutes.`,
-            `Use the node_status tool with node_id "${node.id}" to check progress.`,
+            `Use the node_status tool with node_id "${node.id}" to check progress — or node_status with wait_for "wallet_pending" to block until the VPS is up and the wallet step is next.`,
             ``,
             `IMPORTANT: The user must complete wallet setup manually.`,
             `When the status reaches "wallet_pending", send them to`,
@@ -318,35 +354,180 @@ export async function handleDeployNode(
   }
 }
 
+interface NodeStatusRow {
+  id: string;
+  status: string;
+  vpsIp: string | null;
+  lndRestHost: string | null;
+  monthlyCostCents: number | null;
+  lastError: string | null;
+  torAddress: string | null;
+  hasLndMacaroon: boolean;
+  hasLncPairing: boolean;
+  tenantId: string | null;
+  /** Capacity sweep (every ~5 min); null = not measured yet. */
+  activeChannelCount?: number | null;
+  receivingCapacitySat?: number | null;
+}
+
+/**
+ * Waitable milestones for `wait_for` (L5: agents driving deploy → wallet →
+ * bind unattended). A node already PAST a milestone counts as met — the
+ * point is "has it happened", not "is it there right now".
+ */
+const NODE_WAIT_TARGETS = {
+  wallet_pending: "the VPS is up and LND is waiting for its wallet",
+  ready: "the node is fully set up (wallet created, macaroon minted)",
+  payable: "the node can RECEIVE payments (an active channel with inbound capacity)",
+} as const;
+type NodeWaitTarget = keyof typeof NODE_WAIT_TARGETS;
+
+const NODE_STATUS_RANK: Record<string, number> = {
+  provisioning: 0,
+  installing: 1,
+  wallet_pending: 2,
+  syncing: 3,
+  ready: 4,
+};
+
+const DEFAULT_WAIT_TIMEOUT_S = 120;
+const MAX_WAIT_TIMEOUT_S = 600;
+const WAIT_POLL_MS = 10_000;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function waitTargetMet(node: NodeStatusRow, target: NodeWaitTarget): boolean {
+  if (target === "payable") {
+    return (
+      node.status === "ready" &&
+      (node.activeChannelCount ?? 0) > 0 &&
+      (node.receivingCapacitySat ?? 0) > 0
+    );
+  }
+  return (NODE_STATUS_RANK[node.status] ?? -1) >= NODE_STATUS_RANK[target];
+}
+
+/** What to do when a wait timed out, per target — never "just keep polling". */
+function waitTimeoutGuidance(target: NodeWaitTarget, node: NodeStatusRow): string {
+  switch (target) {
+    case "wallet_pending":
+      return "Provisioning normally takes ~5 minutes. Re-run node_status with the same wait_for to keep waiting; if it sits in provisioning/installing well past 15 minutes, check the Error line above (or the dashboard) instead of waiting again.";
+    case "ready":
+      return node.status === "syncing"
+        ? "The node is syncing; that finishes on its own. Re-run node_status with the same wait_for."
+        : "Re-run node_status with the same wait_for, or check the Error line above.";
+    case "payable":
+      return "This is normal if a channel was just opened: channel opens need on-chain confirmations (typically 10-60 min) and the capacity sweep runs every ~5 minutes. Tell the user, do something else, and re-run node_status with wait_for \"payable\" later instead of polling in a tight loop.";
+  }
+}
+
+async function fetchNodeStatus(
+  baseUrl: string,
+  nodeId: string,
+  authToken?: string,
+): Promise<NodeStatusRow> {
+  const result = await apiRequest<{ node: NodeStatusRow }>(baseUrl, `/nodes/${nodeId}`, {
+    token: authToken,
+  });
+  return result.node;
+}
+
 export async function handleNodeStatus(
-  args: { node_id: string },
+  args: { node_id: string; wait_for?: string; timeout_s?: number },
   apiUrl?: string,
   authToken?: string,
+  // Poll cadence is injectable for tests only; callers use the default.
+  pollIntervalMs: number = WAIT_POLL_MS,
 ): Promise<ToolResult> {
   const baseUrl = apiUrl ?? DEFAULT_API_URL;
 
   try {
-    const result = await apiRequest<{
-      node: {
-        id: string;
-        status: string;
-        vpsIp: string | null;
-        lndRestHost: string | null;
-        monthlyCostCents: number | null;
-        lastError: string | null;
-        torAddress: string | null;
-        hasLndMacaroon: boolean;
-        hasLncPairing: boolean;
-        tenantId: string | null;
-      };
-    }>(baseUrl, `/nodes/${args.node_id}`, { token: authToken });
+    if (args.wait_for !== undefined && !(args.wait_for in NODE_WAIT_TARGETS)) {
+      return errorText(
+        `wait_for must be one of: ${Object.keys(NODE_WAIT_TARGETS).join(", ")}. Omit it for a one-shot status check.`,
+      );
+    }
+    const target = args.wait_for as NodeWaitTarget | undefined;
 
-    const node = result.node;
+    let timeoutS = DEFAULT_WAIT_TIMEOUT_S;
+    if (args.timeout_s !== undefined) {
+      if (!target) {
+        return errorText("timeout_s only makes sense together with wait_for.");
+      }
+      if (!Number.isFinite(args.timeout_s) || args.timeout_s < 5 || args.timeout_s > MAX_WAIT_TIMEOUT_S) {
+        return errorText(`timeout_s must be between 5 and ${MAX_WAIT_TIMEOUT_S} seconds.`);
+      }
+      timeoutS = Math.floor(args.timeout_s);
+    }
+
+    const started = Date.now();
+    const deadline = started + timeoutS * 1000;
+    let polls = 0;
+    let node = await fetchNodeStatus(baseUrl, args.node_id, authToken);
+    polls++;
+
+    if (target) {
+      for (;;) {
+        // Terminal states fail loudly and immediately — waiting can't fix them.
+        if (node.status === "error" || node.status === "destroyed") {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `WAIT FAILED: node ${node.id} is in terminal state "${node.status}"${node.lastError ? ` (${node.lastError})` : ""}. Waiting cannot recover this; surface it to the user.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (waitTargetMet(node, target)) break;
+        // wallet_pending only advances when the USER completes the seed
+        // ceremony in the browser. Polling past it is a silent dead loop —
+        // stop immediately and say what has to happen.
+        if (node.status === "wallet_pending" && (target === "ready" || target === "payable")) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `WAIT STOPPED (not a timeout): node ${node.id} is in "wallet_pending", and only the user can advance it — they must create the node's wallet at ${SITE_URL}/nodes/${node.id} (24-word seed, generated on their VPS). ` +
+                  `Waiting for "${target}" cannot progress until that's done. Ask the user to complete it, then re-run node_status with wait_for "${target}".`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (Date.now() + pollIntervalMs > deadline) {
+          return {
+            content: [
+              {
+                type: "text",
+                text:
+                  `TIMED OUT after ${timeoutS}s (${polls} check(s)) waiting for "${target}" — ${NODE_WAIT_TARGETS[target]}.\n` +
+                  `Current state: status ${node.status}, channels ${node.activeChannelCount ?? "unmeasured"}, inbound ${node.receivingCapacitySat ?? "unmeasured"} sats${node.lastError ? `, error: ${node.lastError}` : ""}.\n` +
+                  waitTimeoutGuidance(target, node),
+              },
+            ],
+            isError: true,
+          };
+        }
+        await sleep(pollIntervalMs);
+        node = await fetchNodeStatus(baseUrl, args.node_id, authToken);
+        polls++;
+      }
+    }
+
     const lines = [
       `Node: ${node.id}`,
       `Status: ${node.status}`,
       `IP: ${node.vpsIp ?? "pending"}`,
     ];
+    if (target) {
+      lines.unshift(
+        `Waited ${Math.round((Date.now() - started) / 1000)}s (${polls} check(s)) — "${target}" met: ${NODE_WAIT_TARGETS[target]}.`,
+        "",
+      );
+    }
 
     if (node.lndRestHost) lines.push(`LND REST: ${node.lndRestHost}`);
     if (node.torAddress) lines.push(`Tor: ${node.torAddress}`);
@@ -360,9 +541,37 @@ export async function handleNodeStatus(
         `Send them to ${SITE_URL}/nodes/${node.id} — it opens the Lightning`,
         "Terminal UI and walks them through writing down the 24-word seed",
         "phrase (generated on their VPS; bolthub never sees it).",
+        "",
+        "If Lightning Terminal shows \"LND is not running\", the node is still",
+        "booting — that error is expected for the first few minutes after the",
+        "VM comes up. Nothing is broken; wait a couple of minutes and refresh.",
       );
     } else if (node.status === "ready") {
-      lines.push("", "Node is online and ready to receive payments.");
+      // Reachable is NOT payable (H1): report capacity, never a blanket
+      // "ready to receive payments" a channel-less node can't honor.
+      const chans = node.activeChannelCount;
+      const inbound = node.receivingCapacitySat;
+      if (chans === 0 || inbound === 0) {
+        lines.push(
+          "",
+          `Node is online and reachable, but CANNOT RECEIVE PAYMENTS: ${chans === 0 ? "it has no channels" : "its channels have no inbound capacity left"}.`,
+          "Buyers paying a workspace backed by this node get a raw Lightning routing error.",
+          "Get an inbound channel:",
+          "  - Open a channel TO this node from another node you control, or",
+          "  - Buy an inbound channel from an LSP via the node's Lightning Terminal (Loop/Pool).",
+          "Channel opens need on-chain confirmations (typically 10-60 min); re-run node_status to re-check.",
+        );
+      } else if (chans == null) {
+        lines.push(
+          "",
+          "Node is online and reachable. Channel capacity hasn't been measured yet (the sweep runs every ~5 minutes) — until it is, treat \"can receive payments\" as unknown.",
+        );
+      } else {
+        lines.push(
+          "",
+          `Node is online with ${chans} active channel(s) and ~${inbound} sats of inbound capacity — ready to receive payments.`,
+        );
+      }
       if (!node.tenantId) {
         lines.push(
           `Not yet a payout wallet — run connect_wallet with node_id "${node.id}" to bind it to a workspace (server-side, no secrets in chat), or use the dashboard.`,
@@ -393,10 +602,14 @@ export async function apiRequest<T>(
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (opts.token) headers.Authorization = `Bearer ${opts.token}`;
 
+  // 30s abort (2026-07-15 smoke-test finding): without it, one stalled
+  // connection hangs the tool call forever — and in a stdio connector that
+  // wedges the whole session with no way for the agent to recover.
   const res = await fetch(`${baseUrl}${path}`, {
     method: opts.method ?? "GET",
     headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {

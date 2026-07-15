@@ -89,7 +89,7 @@ describe("Budget", () => {
 });
 
 describe("L402Client delegated-cap interlock (AF-D6)", () => {
-  const wallet: WalletAdapter = { payInvoice: async () => ({ preimage: "beef" }) };
+  const wallet: WalletAdapter = { payInvoice: async () => ({ preimage: "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef" }) };
 
   test("reserves against an external shared Budget: == remaining accepted, +1 refused", () => {
     const budget = new Budget({ maxTotal: { sat: 1000 } });

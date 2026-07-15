@@ -237,6 +237,7 @@ export async function handleCallApi(
 
     const fetchOptions: RequestInit = { method };
     const reqHeaders: Record<string, string> = { ...(args.headers ?? {}) };
+    const externalAuth = Object.keys(reqHeaders).some((k) => k.toLowerCase() === "authorization");
 
     if (args.body && method !== "GET" && method !== "HEAD") {
       reqHeaders["Content-Type"] = "application/json";
@@ -260,7 +261,7 @@ export async function handleCallApi(
       if (!resp.ok) {
         return { content: [{ type: "text", text: `HTTP ${resp.status}: ${text}` }], isError: true };
       }
-      return { content: [{ type: "text", text: prettyJson(text) }] };
+      return { content: [{ type: "text", text: prettyJson(text) + paymentOutcomeLine(resp, false, externalAuth) }] };
     }
 
     // max_cost_sats is a REAL per-call cap (L402Client refuses and pays
@@ -286,7 +287,7 @@ export async function handleCallApi(
     const text = await resp.text();
     const suffix = (callCost > 0
       ? `\n\n---\nCost: ${callCost} sats${budgetSummary(l402Client)}`
-      : budgetSummary(l402Client)) + paymentOutcomeLine(resp, callCost > 0);
+      : budgetSummary(l402Client)) + paymentOutcomeLine(resp, callCost > 0, externalAuth);
 
     if (!resp.ok) {
       return {
@@ -614,18 +615,25 @@ function prettyJson(text: string): string {
  * retry loop is that re-sending costs nothing. Empty when the gateway
  * didn't emit the headers (flag off / older gateway).
  *
- * paidThisCall distinguishes the two ways a call can be server-"charged":
+ * paidThisCall distinguishes the ways a call can be server-"charged":
  * a fresh Lightning payment (the client's wallet paid this call) vs a
  * prepaid credential drawing down (bundle use burned — no new payment).
  * The gateway can't tell the client's wallet activity, so the client-side
- * fact wins the wording.
+ * fact wins the wording. externalAuth marks the third way (L1): the caller
+ * supplied its own Authorization header (a delegated child token, or a
+ * credential minted elsewhere), so nothing of THIS session's budget or
+ * prepaid credit was touched — "prepaid use burned" would misreport that.
  */
-function paymentOutcomeLine(resp: Response, paidThisCall: boolean): string {
+function paymentOutcomeLine(resp: Response, paidThisCall: boolean, externalAuth = false): string {
   const status = readPaymentStatus(resp.headers);
   if (!status) return "";
   switch (status.state) {
     case "charged": {
-      const how = paidThisCall ? "charged" : "prepaid use burned (no new payment)";
+      const how = paidThisCall
+        ? "charged"
+        : externalAuth
+          ? "external credential accepted (no new payment; this session's budget and prepaid credit are untouched)"
+          : "prepaid use burned (no new payment)";
       return resp.ok
         ? `\nPayment: ${how}`
         : `\nPayment: ${how} (4xx answers are real responses and stay paid)`;

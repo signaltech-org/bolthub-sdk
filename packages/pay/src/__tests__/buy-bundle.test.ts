@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 function wallet(): WalletAdapter {
-  return { payInvoice: mock(async () => ({ preimage: "beef" })) };
+  return { payInvoice: mock(async () => ({ preimage: "beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef" })) };
 }
 
 describe("buyBundle (retired)", () => {

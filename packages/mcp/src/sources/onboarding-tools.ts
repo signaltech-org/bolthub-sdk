@@ -141,9 +141,47 @@ interface NodeRow {
   provider: string;
   tenantId: string | null;
   hasInvoicesMacaroon: boolean;
+  /** From the capacity sweep (node-provisioning job); null = not measured yet. */
+  activeChannelCount?: number | null;
+  receivingCapacitySat?: number | null;
 }
 
 const nodeLabel = (n: NodeRow) => `${n.id}${n.name ? ` "${n.name}"` : ""} (${n.provider})`;
+
+interface NodeCapacity {
+  activeChannelCount?: number | null;
+  receivingCapacitySat?: number | null;
+}
+
+/**
+ * Reachable is NOT payable (smoke-test finding H1): a channel-less node
+ * answers every REST probe and cannot receive a single sat. Returns the
+ * warning block for a node with zero channels / zero inbound capacity,
+ * a "not measured yet" note when the sweep hasn't run, or null when the
+ * node genuinely can receive.
+ */
+export function nodeCapacityWarning(cap: NodeCapacity | undefined): string[] | null {
+  if (!cap) return null;
+  if (cap.activeChannelCount === 0 || cap.receivingCapacitySat === 0) {
+    const reason =
+      cap.activeChannelCount === 0
+        ? "it has NO CHANNELS"
+        : "its channels have NO INBOUND CAPACITY left";
+    return [
+      `WARNING: this node is reachable but CANNOT RECEIVE PAYMENTS — ${reason}. Every buyer payment will fail with a raw Lightning routing error until it has inbound liquidity.`,
+      "To fix, get an inbound channel:",
+      "  - Open a channel TO this node from another node you control (instant inbound from your own liquidity), or",
+      "  - Buy an inbound channel from an LSP via the node's Lightning Terminal (Loop/Pool).",
+      "Either way the channel open needs on-chain confirmations (typically 10-60 min); re-check with node_status afterwards.",
+    ];
+  }
+  if (cap.activeChannelCount == null) {
+    return [
+      "Note: this node's channel capacity hasn't been measured yet (the monitoring sweep runs every ~5 minutes). Check node_status before publishing — a node without an inbound channel cannot receive payments.",
+    ];
+  }
+  return null;
+}
 
 /** In-chat steps for self-hosted LND: everything here is non-secret
  *  guidance; only the macaroon paste happens in the browser. */
@@ -172,17 +210,29 @@ export async function handleConnectWallet(
     // into this workspace's wallet config. Entirely server-side — no secret
     // ever enters this chat (see /nodes/:id/connect-wallet).
     if (args.node_id) {
-      await apiRequest(baseUrl, `/nodes/${args.node_id}/connect-wallet`, {
-        method: "POST",
-        body: { tenantId: resolved.tenant.id },
-        token: authToken,
-      });
-      return textResult(
-        [
-          `Node ${args.node_id} is now the payout wallet for "${resolved.tenant.name}" (LND via Node Launcher, invoice-only macaroon, copied server-side — nothing touched this chat).`,
-          "Payouts settle directly to your node. Next: list_api to draft a listing, or get_onboarding_state for the full picture.",
-        ].join("\n"),
+      const bind = await apiRequest<{ connected: boolean; node?: NodeCapacity }>(
+        baseUrl,
+        `/nodes/${args.node_id}/connect-wallet`,
+        {
+          method: "POST",
+          body: { tenantId: resolved.tenant.id },
+          token: authToken,
+        },
       );
+      const lines = [
+        `Node ${args.node_id} is now the payout wallet for "${resolved.tenant.name}" (LND via Node Launcher, invoice-only macaroon, copied server-side — nothing touched this chat).`,
+        "Payouts settle directly to your node.",
+      ];
+      const warning = nodeCapacityWarning(bind.node);
+      if (warning) {
+        lines.push("", ...warning);
+      } else if (bind.node?.receivingCapacitySat != null) {
+        lines.push(
+          `Inbound capacity: ~${bind.node.receivingCapacitySat} sats across ${bind.node.activeChannelCount} active channel(s) — the node can receive payments.`,
+        );
+      }
+      lines.push("", "Next: get_onboarding_state for the full picture.");
+      return textResult(lines.join("\n"));
     }
 
     const { tenant } = await apiRequest<{
@@ -204,12 +254,14 @@ export async function handleConnectWallet(
           ].join("\n"),
         );
       }
+      // walletReachable null = never swept yet (the wallet-health job runs
+      // every 30 min) — say so rather than silently omitting the verdict.
       const reachNote =
         tenant.walletReachable === true
           ? " Reachability checks are passing."
-          : "";
+          : " First reachability check runs within ~30 minutes."
       return textResult(
-        `Wallet connected for "${tenant.name}"${tenant.walletProvider ? ` (${tenant.walletProvider})` : ""}.${reachNote} Payouts land directly in that wallet — bolthub never holds funds. Next: list_api to draft a listing.`,
+        `Wallet connected for "${tenant.name}"${tenant.walletProvider ? ` (${tenant.walletProvider})` : ""}.${reachNote} Payouts land directly in that wallet — bolthub never holds funds. Next: get_onboarding_state for the full picture.`,
       );
     }
 
@@ -224,7 +276,7 @@ export async function handleConnectWallet(
       const node = bindable[0];
       return textResult(
         [
-          `You have a deployed node ready: ${nodeLabel(node)}${node.tenantId ? " (currently paying out another workspace — binding here will move it)" : ""}.`,
+          `You have a deployed node ready: ${nodeLabel(node)}${node.tenantId ? " (currently paying out another workspace — binding here will move it)" : ""}${node.activeChannelCount === 0 ? " — NOTE: it has no channels yet, so it can't receive payments until it gets inbound liquidity (node_status has the fix steps)" : ""}.`,
           `To make it the payout wallet for "${tenant.name}", re-run connect_wallet with node_id "${node.id}". The credential copy is server-side; no secrets enter this chat.`,
           "",
           "Prefer a different wallet? Options:",
@@ -291,7 +343,11 @@ export async function handleGetOnboardingState(
 
     const [{ tenant }, { endpoints }] = await Promise.all([
       apiRequest<{
-        tenant: TenantRow & { walletConnected?: boolean; walletReachable?: boolean | null };
+        tenant: TenantRow & {
+          walletConnected?: boolean;
+          walletReachable?: boolean | null;
+          walletConnectionMethod?: string | null;
+        };
       }>(
         baseUrl,
         `/tenants/${resolved.tenant.id}`,
@@ -303,6 +359,24 @@ export async function handleGetOnboardingState(
         { token: authToken },
       ),
     ]);
+
+    // A node-backed wallet can be reachable and still unable to receive
+    // (zero channels / zero inbound). Pull the bound node's swept capacity
+    // so the checklist reports payable, not just reachable (H1).
+    let boundNode: NodeRow | undefined;
+    if (tenant.walletConnected && tenant.walletConnectionMethod === "node_launcher") {
+      try {
+        const { nodes } = await apiRequest<{ nodes: NodeRow[] }>(baseUrl, "/nodes", {
+          token: authToken,
+        });
+        boundNode = nodes.find((n) => n.tenantId === tenant.id);
+      } catch {
+        // Capacity is advisory here — never fail the whole state read for it.
+      }
+    }
+    const nodeNotPayable =
+      boundNode != null &&
+      (boundNode.activeChannelCount === 0 || boundNode.receivingCapacitySat === 0);
 
     const drafts = endpoints.filter((e) => !e.directoryListed);
     const published = endpoints.filter((e) => e.directoryListed && e.isActive);
@@ -336,7 +410,9 @@ export async function handleGetOnboardingState(
       `${mark(true)} Workspace created`,
       tenant.walletConnected && tenant.walletReachable === false
         ? `${mark(false, true)} Wallet connected but UNREACHABLE (buyers can't pay)`
-        : `${mark(!!tenant.walletConnected)} Wallet connected${tenant.walletReachable === true ? " (reachability checks passing)" : ""}`,
+        : nodeNotPayable
+          ? `${mark(false, true)} Wallet connected (bolthub node) but NOT PAYABLE — ${boundNode!.activeChannelCount === 0 ? "the node has no channels" : "no inbound capacity"}, so buyers can't pay`
+          : `${mark(!!tenant.walletConnected)} Wallet connected${tenant.walletReachable === true ? " (reachability checks passing)" : ""}${boundNode?.receivingCapacitySat ? ` (~${boundNode.receivingCapacitySat} sats inbound capacity)` : ""}`,
       `${mark(endpoints.length > 0)} Endpoints: ${drafts.length} draft, ${published.length} published${unpriced.length > 0 ? ` (${unpriced.length} UNPRICED)` : ""}`,
       `${mark(!protectionBad && originIds.length > 0, protectionBad)} Origin protection: ${protection}`,
       `${mark(live)} Listing live in the directory`,
@@ -347,6 +423,8 @@ export async function handleGetOnboardingState(
     let next: string;
     if (tenant.walletConnected && tenant.walletReachable === false)
       next = "fix the payout wallet — it's unreachable, so every buyer payment fails at invoice creation (connect_wallet has the details).";
+    else if (nodeNotPayable)
+      next = `get an inbound channel on node ${boundNode!.id} — it's reachable but can't receive a sat (open a channel to it from another node, or buy inbound via its Lightning Terminal; node_status has the steps).`;
     else if (!tenant.walletConnected) next = "connect_wallet — payouts need somewhere to land.";
     else if (endpoints.length === 0) next = "list_api with your OpenAPI/Postman spec to draft the listing.";
     else if (protectionBad)

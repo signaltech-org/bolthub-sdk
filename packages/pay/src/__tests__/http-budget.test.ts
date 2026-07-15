@@ -2,7 +2,7 @@ import { describe, test, expect, mock, afterEach } from "bun:test";
 import { L402Client, L402BudgetError } from "../http/client";
 import type { WalletAdapter } from "../http/types";
 
-function createMockWallet(preimage = "pre"): WalletAdapter {
+function createMockWallet(preimage = "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"): WalletAdapter {
   return { payInvoice: mock(async () => ({ preimage })) };
 }
 
@@ -109,6 +109,21 @@ describe("payment-failure rollback", () => {
     await expect(client.get("https://example.com/api")).rejects.toThrow();
     expect(client.totalSpent).toBe(0); // reservation rolled back
   });
+
+  test("a success-shaped payment without a valid preimage rolls back, not counts", async () => {
+    // LND reports failures in-band (HTTP 200 + no preimage) and some NWC
+    // wallets resolve self-payment rejections the same way. The client must
+    // treat that as a failed payment: budget rolled back, cause surfaced.
+    const wallet: WalletAdapter = {
+      payInvoice: mock(async () => ({ preimage: undefined as unknown as string })),
+    };
+    const client = new L402Client({ wallet, budgetSats: 1000, payRetries: 0 });
+    mockFetchSeq([challenge402({ amountSats: 100 })]);
+    await expect(client.get("https://example.com/api")).rejects.toThrow(
+      "no valid payment preimage",
+    );
+    expect(client.totalSpent).toBe(0);
+  });
 });
 
 describe("concurrency (P2)", () => {
@@ -131,5 +146,26 @@ describe("concurrency (P2)", () => {
     expect(refused).toBe(n - budget);
     expect(client.totalSpent).toBe(budget); // exact, never over
     expect(client.remainingBudget).toBe(0);
+  });
+});
+
+describe("describePaymentFailure (M5 payer-error translation)", () => {
+  test("routing failures get the no-inbound-liquidity reading", async () => {
+    const { describePaymentFailure } = await import("../http/client");
+    const msg = describePaymentFailure(new Error("unknown destination node 030586cf"));
+    expect(msg).toContain("unknown destination node 030586cf"); // raw preserved
+    expect(msg).toContain("no channels or no inbound liquidity");
+  });
+
+  test("self-payment failures name the same-wallet cause", async () => {
+    const { describePaymentFailure } = await import("../http/client");
+    expect(describePaymentFailure(new Error("self-payments not allowed"))).toContain(
+      "same wallet",
+    );
+  });
+
+  test("unrecognized errors pass through untouched", async () => {
+    const { describePaymentFailure } = await import("../http/client");
+    expect(describePaymentFailure(new Error("weird wallet noise"))).toBe("weird wallet noise");
   });
 });

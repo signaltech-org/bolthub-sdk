@@ -92,6 +92,19 @@ export const MONTHLY_USAGE_TIERS: readonly UsageTier[] = [
 
 export const FREE_REQUESTS_PER_MONTH = MONTHLY_USAGE_TIERS[0].upTo;
 
+// The usage fee is capped at this share of the tenant's settled earnings for
+// the cycle (basis points; 500 = 5%). A flat per-request fee is regressive for
+// micro-priced endpoints — at 2 sats/req a seller charging 1 sat/call would owe
+// more in fees than they earn — so the cap keeps the platform fee proportional
+// exactly where the flat schedule would exceed 5% of what the seller actually
+// earned. min() semantics: the cap can only ever lower a fee, never raise one,
+// and the base fee is not part of the capped amount. Earnings are measured
+// from invoice truth (settled/consumed gateway invoices + facilitator
+// settlements), never from anything the tenant asserts. The pricing page and
+// docs advertise this as "your usage fee never exceeds 5% of what you earned";
+// keep all three in sync if the number moves.
+export const USAGE_FEE_EARNINGS_CAP_BPS = 500;
+
 /**
  * Compute the usage fee for a given number of requests in a monthly
  * cycle. Tiered pricing — earlier requests are cheaper, free tier
@@ -115,8 +128,25 @@ export function computeUsageFee(requestCount: number): number {
 }
 
 /**
- * Compute the total monthly bill (base fee + usage fee).
+ * Apply the earnings cap to a cycle's usage fee: the lesser of the tiered
+ * schedule and USAGE_FEE_EARNINGS_CAP_BPS of the sats the tenant actually
+ * earned that cycle. `settledSats` ≤ 0 caps the usage fee at 0 (the tenant
+ * earned nothing, so only the base fee is due).
  */
-export function computeMonthlyBill(requestCount: number): number {
-  return MONTHLY_BASE_FEE_SATS + computeUsageFee(requestCount);
+export function computeCappedUsageFee(requestCount: number, settledSats: number): number {
+  const capSats = Math.floor((Math.max(settledSats, 0) * USAGE_FEE_EARNINGS_CAP_BPS) / 10_000);
+  return Math.min(computeUsageFee(requestCount), capSats);
+}
+
+/**
+ * Compute the total monthly bill (base fee + usage fee). When `settledSats`
+ * is provided the usage fee is earnings-capped; without it the uncapped
+ * schedule is returned (the pricing-page estimator's worst case).
+ */
+export function computeMonthlyBill(requestCount: number, settledSats?: number): number {
+  const usage =
+    settledSats === undefined
+      ? computeUsageFee(requestCount)
+      : computeCappedUsageFee(requestCount, settledSats);
+  return MONTHLY_BASE_FEE_SATS + usage;
 }

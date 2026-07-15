@@ -35,7 +35,14 @@ afterEach(() => {
 
 const TENANT = { id: "t-1", name: "Acme Data", slug: "acme", status: "active", directoryListed: true };
 
-const OVERVIEW = { totalInvoices: 80, settledInvoices: 64, totalSatsEarned: 3200 };
+const OVERVIEW = {
+  totalInvoices: 80,
+  settledInvoices: 64,
+  totalSatsEarned: 3200,
+  unredeemedInvoices: 4,
+  unredeemedSats: 200,
+  consumedInvoices: 60,
+};
 const REVENUE = {
   data: [
     { date: "2026-07-10", sats: 100, count: 20 },
@@ -80,6 +87,8 @@ describe("handleGetEarnings", () => {
     expect(text).toContain("2026-07-12: 250 sats (44)");
     expect(text).not.toContain("2026-07-11"); // zero days omitted
     expect(text).toContain("1. GET /v1/things — 3,000 sats / 600 paid request(s)");
+    expect(text).toContain("Paid but not yet redeemed: 4 invoice(s) holding 200 sats");
+    expect(text).toContain("Quote conversion: 80 quoted → 64 paid (80%) → 60 redeemed (94% of paid).");
     expect(recorded.every((r) => r.method === "GET")).toBe(true);
     const revenueCall = recorded.find((r) => r.path.endsWith("/analytics/revenue"))!;
     expect(revenueCall.search).toContain("start=");
@@ -87,17 +96,107 @@ describe("handleGetEarnings", () => {
     expect(text).not.toContain(TOKEN);
   });
 
-  test("zero revenue points at analyze_listing and publish_listing", async () => {
+  test("zero revenue with endpoint state unavailable falls back to the generic hint", async () => {
     mockApi({
       "GET /tenants": { tenants: [TENANT] },
       "GET /tenants/t-1/analytics/overview": { totalInvoices: 0, settledInvoices: 0, totalSatsEarned: 0 },
       "GET /tenants/t-1/analytics/revenue": { data: [] },
       "GET /tenants/t-1/analytics/top-endpoints": { data: [] },
+      // no /endpoints mock: the hint's extra request 404s and must not break the report
     });
     const result = await handleGetEarnings({}, API, TOKEN);
+    expect(result.isError).toBeUndefined();
     const text = result.content[0].text;
     expect(text).toContain("analyze_listing");
     expect(text).toContain("publish_listing");
+  });
+
+  test("older API without unredeemed fields renders no disclosure lines", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/analytics/overview": { totalInvoices: 80, settledInvoices: 64, totalSatsEarned: 3200 },
+      "GET /tenants/t-1/analytics/revenue": REVENUE,
+      "GET /tenants/t-1/analytics/top-endpoints": TOP,
+    });
+    const result = await handleGetEarnings({}, API, TOKEN);
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).not.toContain("redeemed");
+    expect(text).not.toContain("Quote conversion");
+  });
+
+  test("fully redeemed history renders conversion but no unredeemed line", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/analytics/overview": {
+        totalInvoices: 10,
+        settledInvoices: 10,
+        totalSatsEarned: 500,
+        unredeemedInvoices: 0,
+        unredeemedSats: 0,
+        consumedInvoices: 10,
+      },
+      "GET /tenants/t-1/analytics/revenue": REVENUE,
+      "GET /tenants/t-1/analytics/top-endpoints": TOP,
+    });
+    const result = await handleGetEarnings({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).not.toContain("Paid but not yet redeemed");
+    expect(text).toContain("Quote conversion: 10 quoted → 10 paid (100%) → 10 redeemed (100% of paid).");
+  });
+
+  // L3: the empty state names WHY there's no revenue, not a generic checklist.
+  test("zero revenue with nothing published points at publishing", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/analytics/overview": { totalInvoices: 0, settledInvoices: 0, totalSatsEarned: 0 },
+      "GET /tenants/t-1/analytics/revenue": { data: [] },
+      "GET /tenants/t-1/analytics/top-endpoints": { data: [] },
+      "GET /tenants/t-1/endpoints": { endpoints: [{ isActive: false }] },
+    });
+    const result = await handleGetEarnings({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("nothing is published");
+    expect(text).toContain("publish_listing");
+  });
+
+  test("zero revenue while published but unlisted points at the directory", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [{ ...TENANT, directoryListed: false }] },
+      "GET /tenants/t-1/analytics/overview": { totalInvoices: 0, settledInvoices: 0, totalSatsEarned: 0 },
+      "GET /tenants/t-1/analytics/revenue": { data: [] },
+      "GET /tenants/t-1/analytics/top-endpoints": { data: [] },
+      "GET /tenants/t-1/endpoints": { endpoints: [{ isActive: true }] },
+    });
+    const result = await handleGetEarnings({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("isn't listed in the marketplace directory");
+  });
+
+  test("quotes issued but never paid points at payability, not marketing", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/analytics/overview": { totalInvoices: 5, settledInvoices: 0, totalSatsEarned: 0 },
+      "GET /tenants/t-1/analytics/revenue": { data: [] },
+      "GET /tenants/t-1/analytics/top-endpoints": { data: [] },
+    });
+    const result = await handleGetEarnings({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("5 payment quote(s) were issued and none were paid");
+    expect(text).toContain("node_status");
+    // No endpoints request on this path: publish state isn't the problem.
+    expect(recorded.some((r) => r.path === "/tenants/t-1/endpoints")).toBe(false);
+  });
+
+  test("quotes unpaid with an unreachable wallet says so", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [{ ...TENANT, walletReachable: false }] },
+      "GET /tenants/t-1/analytics/overview": { totalInvoices: 3, settledInvoices: 0, totalSatsEarned: 0 },
+      "GET /tenants/t-1/analytics/revenue": { data: [] },
+      "GET /tenants/t-1/analytics/top-endpoints": { data: [] },
+    });
+    const result = await handleGetEarnings({}, API, TOKEN);
+    expect(result.content[0].text).toContain("payout wallet is currently unreachable");
   });
 });
 
@@ -133,6 +232,21 @@ describe("handleUsageSummary", () => {
     expect(text).toContain("GET /v1/things — 600 paid request(s), 3,000 sats");
     expect(text).toContain("SDK tools (last 30 day(s)): 12 paid call(s), 60 sats");
     expect(recorded.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  // M2: trialEndsAt null = the clock hasn't started (it starts at first
+  // publish) — a bare "trial" reads like it's already ticking.
+  test("trial with no trialEndsAt renders as not started", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/billing": { billing: { ...BILLING.billing, trialEndsAt: null } },
+      "GET /tenants/t-1/facilitator/usage": { totals: { paidCalls: 0, amount: 0 } },
+      "GET /tenants/t-1/analytics/top-endpoints": { data: [] },
+    });
+    const result = await handleUsageSummary({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("trial (not started");
+    expect(text).toContain("publish your first endpoint");
   });
 
   test("facilitator route failure is tolerated (older API)", async () => {

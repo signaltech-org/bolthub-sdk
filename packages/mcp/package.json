@@ -1,6 +1,6 @@
 {
   "name": "@bolthub/mcp",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "The bolthub MCP server — the whole marketplace, specific L402 gateways, and your other MCP servers behind one config entry with one shared Lightning budget",
   "mcpName": "ai.bolthub/mcp",
   "type": "module",

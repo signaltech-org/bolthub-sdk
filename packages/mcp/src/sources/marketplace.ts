@@ -202,11 +202,21 @@ const TOOLS: SourceTool[] = [
   {
     name: "node_status",
     description:
-      "Check the status of a deployed Lightning node. Returns current state, IP address, sync progress, and setup instructions when applicable.",
+      "Check the status of a deployed Lightning node. Returns current state, IP address, sync progress, and setup instructions when applicable. Pass wait_for to BLOCK until a milestone is reached (for driving deploy → wallet → bind without babysitting): the call polls server-side state and returns as soon as the condition holds, errors loudly on timeout or a terminal state, and stops immediately when only user action can progress things (wallet creation is a browser step). Never wrap this tool in your own polling loop — use wait_for.",
     inputSchema: {
       type: "object",
       properties: {
         node_id: { type: "string", description: "Node ID returned by deploy_node" },
+        wait_for: {
+          type: "string",
+          enum: ["wallet_pending", "ready", "payable"],
+          description:
+            "Block until: wallet_pending = VPS up, LND waiting for its wallet (next step is the user's seed ceremony); ready = wallet created and macaroon minted; payable = ready AND an active channel with inbound capacity (what a settlement test needs). A node already past the milestone returns immediately.",
+        },
+        timeout_s: {
+          type: "number",
+          description: "Hard wait ceiling in seconds, 5-600 (default 120). On timeout the tool errors with what to do next; it never silently keeps polling.",
+        },
       },
       required: ["node_id"],
     },

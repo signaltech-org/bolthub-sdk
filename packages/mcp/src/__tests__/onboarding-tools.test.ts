@@ -176,6 +176,37 @@ describe("handleConnectWallet", () => {
     const bind = recorded.find((r) => r.path === "/nodes/node-1/connect-wallet")!;
     expect(bind.body).toEqual({ tenantId: "t-1" });
   });
+
+  test("binding a channel-less node warns that reachable is not payable (H1)", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "POST /nodes/node-1/connect-wallet": {
+        connected: true,
+        node: { activeChannelCount: 0, receivingCapacitySat: 0 },
+      },
+    });
+    const result = await handleConnectWallet({ node_id: "node-1" }, API, TOKEN);
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("CANNOT RECEIVE PAYMENTS");
+    expect(text).toContain("NO CHANNELS");
+    expect(text).toContain("inbound");
+  });
+
+  test("binding a node with inbound capacity reports it as payable", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "POST /nodes/node-1/connect-wallet": {
+        connected: true,
+        node: { activeChannelCount: 2, receivingCapacitySat: 250_000 },
+      },
+    });
+    const result = await handleConnectWallet({ node_id: "node-1" }, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("250000 sats");
+    expect(text).toContain("can receive payments");
+    expect(text).not.toContain("CANNOT RECEIVE");
+  });
 });
 
 describe("handleGetOnboardingState", () => {
@@ -189,6 +220,34 @@ describe("handleGetOnboardingState", () => {
     origin: { id: "o-1", baseUrl: "https://origin.example.com" },
     pricingRules: [{ pricingModel: "per_request", priceSats: 5 }],
     ...over,
+  });
+
+  test("node-backed wallet with zero channels reads NOT PAYABLE, next step = inbound channel", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1": {
+        tenant: {
+          ...TENANT,
+          walletConnected: true,
+          walletReachable: true,
+          walletConnectionMethod: "node_launcher",
+        },
+      },
+      "GET /tenants/t-1/endpoints": { endpoints: [EP()] },
+      "GET /nodes": {
+        nodes: [
+          { id: "node-1", name: null, status: "ready", provider: "vultr", tenantId: "t-1", hasInvoicesMacaroon: true, activeChannelCount: 0, receivingCapacitySat: 0 },
+        ],
+      },
+      "POST /tenants/t-1/origins/o-1/check": {
+        check: { verdict: "protected", signed: {}, unsigned: {} },
+      },
+    });
+    const result = await handleGetOnboardingState({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("NOT PAYABLE");
+    expect(text).toContain("no channels");
+    expect(text).toContain("Next: get an inbound channel on node node-1");
   });
 
   test("mid-onboarding state: drafts + public origin drive the next step", async () => {
@@ -295,6 +354,37 @@ describe("handleDeployNode v2 (stored credentials)", () => {
     expect(recorded.some((r) => r.path === "/nodes/deploy")).toBe(false);
   });
 
+  // L4: a returning user with several credentials still gets the provider/
+  // price menu first, never a bare list of opaque credential ids.
+  test("multiple credentials + no provider → provider menu with prices and stored marks", async () => {
+    mockApi({
+      "GET /vps-credentials": {
+        credentials: [CRED, { id: "cred-2", provider: "vultr", label: null, apiKeyMasked: "ef**gh" }],
+      },
+    });
+    const result = await handleDeployNode({}, API, TOKEN);
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("~$3.50/mo");
+    expect(text).toContain("[1 stored credential]");
+    expect(text).not.toContain("cred-1");
+    expect(recorded.some((r) => r.path === "/nodes/deploy")).toBe(false);
+  });
+
+  test("multiple credentials for the chosen provider → credential_id disambiguation", async () => {
+    mockApi({
+      "GET /vps-credentials": {
+        credentials: [CRED, { id: "cred-9", provider: "lunanode", label: "work", apiKeyMasked: "ij**kl" }],
+      },
+    });
+    const result = await handleDeployNode({ provider: "lunanode" }, API, TOKEN);
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("credential_id");
+    expect(text).toContain("cred-1");
+    expect(text).toContain("cred-9");
+  });
+
   test("no credentials + provider chosen → sign-up and token steps, browser link", async () => {
     mockApi({ "GET /vps-credentials": { credentials: [] } });
     const result = await handleDeployNode({ provider: "vultr" }, API, TOKEN);
@@ -312,18 +402,6 @@ describe("handleDeployNode v2 (stored credentials)", () => {
     const badSize = await handleDeployNode({ region: "tor2", size: "huge" }, API, TOKEN);
     expect(badSize.isError).toBe(true);
     expect(badSize.content[0].text).toContain('"recommended"');
-  });
-
-  test("several credentials → lists them and asks for credential_id", async () => {
-    mockApi({
-      "GET /vps-credentials": {
-        credentials: [CRED, { ...CRED, id: "cred-2", provider: "hetzner", label: null }],
-      },
-    });
-    const result = await handleDeployNode({}, API, TOKEN);
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("cred-1");
-    expect(result.content[0].text).toContain("cred-2");
   });
 
   test("deprecated api_key path warns, and a deny-listed 403 becomes browser guidance", async () => {

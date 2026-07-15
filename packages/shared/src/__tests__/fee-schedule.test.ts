@@ -8,7 +8,9 @@ import {
   BILLING_CYCLE_DAYS,
   GRACE_PERIOD_HOURS,
   MAX_PAYMENT_RETRIES,
+  USAGE_FEE_EARNINGS_CAP_BPS,
   computeUsageFee,
+  computeCappedUsageFee,
   computeMonthlyBill,
 } from "../constants";
 
@@ -125,5 +127,50 @@ describe("computeMonthlyBill", () => {
   test("adds usage fee to base fee", () => {
     // 500 free + 100 at 2 sats = 200
     expect(computeMonthlyBill(600)).toBe(MONTHLY_BASE_FEE_SATS + 200);
+  });
+
+  test("applies the earnings cap when settledSats is provided", () => {
+    // Tier fee for 100k requests is 149,000; 5% of 100k earned is 5,000.
+    expect(computeMonthlyBill(100_000, 100_000)).toBe(MONTHLY_BASE_FEE_SATS + 5_000);
+  });
+
+  test("without settledSats returns the uncapped worst case", () => {
+    expect(computeMonthlyBill(100_000)).toBe(MONTHLY_BASE_FEE_SATS + 149_000);
+  });
+});
+
+describe("usage-fee earnings cap", () => {
+  test("cap is 500 bps (5%)", () => {
+    expect(USAGE_FEE_EARNINGS_CAP_BPS).toBe(500);
+  });
+
+  test("cap only ever lowers the fee, never raises it", () => {
+    // Earnings so high the cap is far above the tier fee: schedule applies.
+    expect(computeCappedUsageFee(600, 10_000_000)).toBe(computeUsageFee(600));
+    expect(computeCappedUsageFee(100_000, 100_000_000)).toBe(computeUsageFee(100_000));
+  });
+
+  test("caps the micro-priced seller at 5% of earnings", () => {
+    // 100k requests at 1 sat/call earned 100k sats. Tier fee would be
+    // 149,000 (more than they earned); capped to 5,000.
+    expect(computeUsageFee(100_000)).toBe(149_000);
+    expect(computeCappedUsageFee(100_000, 100_000)).toBe(5_000);
+  });
+
+  test("zero earnings cap the usage fee at zero", () => {
+    expect(computeCappedUsageFee(100_000, 0)).toBe(0);
+  });
+
+  test("negative earnings are treated as zero", () => {
+    expect(computeCappedUsageFee(100_000, -50)).toBe(0);
+  });
+
+  test("cap floors fractional sats in the tenant's favor", () => {
+    // 5% of 99 sats is 4.95 → 4 sats.
+    expect(computeCappedUsageFee(100_000, 99)).toBe(4);
+  });
+
+  test("free-tier cycles owe nothing regardless of earnings", () => {
+    expect(computeCappedUsageFee(500, 1_000_000)).toBe(0);
   });
 });

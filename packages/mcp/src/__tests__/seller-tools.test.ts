@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import { describe, test, expect, afterEach, beforeEach } from "bun:test";
 import {
   handleListApi,
   handlePublishListing,
@@ -322,6 +322,16 @@ describe("handlePublishListing", () => {
 });
 
 describe("resolveAccountToken", () => {
+  // Point the file fallback at a nonexistent path: on a machine that has
+  // actually paired, ~/.bolthub/credentials.json holds a real token and
+  // would leak into the "no token anywhere" case.
+  beforeEach(() => {
+    process.env.BOLTHUB_CREDENTIALS_PATH = "/nonexistent/bolthub-test-credentials.json";
+  });
+  afterEach(() => {
+    delete process.env.BOLTHUB_CREDENTIALS_PATH;
+  });
+
   test("undefined when neither name is set", () => {
     expect(resolveAccountToken({})).toBeUndefined();
   });

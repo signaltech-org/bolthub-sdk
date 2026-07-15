@@ -51,6 +51,9 @@ export interface TenantRow {
   trialEndsAt?: string | null;
   /** Wallet-health verdict (wallet-health job); null/absent = never checked. */
   walletReachable?: boolean | null;
+  walletConnected?: boolean;
+  /** "node_launcher" = payout wallet is a bolthub-managed node (mint-only macaroon). */
+  walletConnectionMethod?: string | null;
 }
 
 interface EndpointRow {
@@ -120,7 +123,7 @@ export async function resolveTenant(
   if (tenants.length === 0) {
     return {
       error: errorResult(
-        "This account has no workspace yet. Create one in the bolthub dashboard first (workspace creation is deliberately not agent-driven), then re-run this tool.",
+        "This account has no workspace yet. Run create_workspace to make one (free while empty), or create it in the dashboard, then re-run this tool.",
       ),
     };
   }
@@ -448,6 +451,34 @@ export async function handlePublishListing(
     if (tenant.trialEndsAt == null) {
       summary.push("", "Note: publishing the first endpoint starts the workspace's 30-day free trial.");
     }
+    if (tenant.walletConnected === false) {
+      summary.push(
+        "",
+        "WARNING: no payout wallet is connected — the listing would be public but every buyer payment fails at invoice creation. Run connect_wallet first.",
+      );
+    } else if (tenant.walletConnectionMethod === "node_launcher") {
+      // Node-backed wallet: reachable is not payable (H1). One extra GET
+      // /nodes only on this path; capacity comes from the monitoring sweep.
+      try {
+        const { nodes } = await apiRequest<{
+          nodes: Array<{
+            id: string;
+            tenantId: string | null;
+            activeChannelCount?: number | null;
+            receivingCapacitySat?: number | null;
+          }>;
+        }>(baseUrl, "/nodes", { token: authToken });
+        const bound = nodes.find((n) => n.tenantId === tenant.id);
+        if (bound && (bound.activeChannelCount === 0 || bound.receivingCapacitySat === 0)) {
+          summary.push(
+            "",
+            `WARNING: the payout wallet is node ${bound.id}, which ${bound.activeChannelCount === 0 ? "has NO CHANNELS" : "has NO INBOUND CAPACITY"} — the listing would be public but no buyer payment can settle. Get an inbound channel first (node_status has the steps).`,
+          );
+        }
+      } catch {
+        // Advisory only — a nodes-list hiccup must not block a publish plan.
+      }
+    }
     if (unpriced.length > 0) {
       summary.push("", `WARNING: ${unpriced.length} endpoint(s) have no pricing rule — set pricing before publishing them.`);
     }
@@ -503,6 +534,7 @@ export async function handlePublishListing(
         "",
         `Directory page: https://bolthub.ai/hub/${tenant.slug}`,
         `Gateway base: ${getGatewayUrl(tenant.slug, "/")}`,
+        "Directory search may lag up to ~a minute behind (CDN cache) — the listing itself is live immediately.",
       ].join("\n"),
     );
   } catch (err) {

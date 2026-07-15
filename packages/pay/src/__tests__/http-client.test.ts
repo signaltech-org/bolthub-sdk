@@ -2,7 +2,7 @@ import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
 import { L402Client, L402BudgetError, L402Error } from "../http/client";
 import type { WalletAdapter } from "../http/types";
 
-function createMockWallet(preimage = "abc123"): WalletAdapter {
+function createMockWallet(preimage = "a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1a5c1"): WalletAdapter {
   return {
     payInvoice: mock(async () => ({ preimage })),
   };
@@ -35,7 +35,7 @@ describe("L402Client", () => {
   });
 
   test("handles 402 challenge, pays invoice, retries", async () => {
-    const wallet = createMockWallet("preimage123");
+    const wallet = createMockWallet("ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12");
     const client = new L402Client({ wallet });
 
     const challengeResponse = new Response(
@@ -109,7 +109,7 @@ describe("L402Client", () => {
   });
 
   test("extractAmount parses amountSats from 402 body and tracks spending", async () => {
-    const wallet = createMockWallet("preimage1");
+    const wallet = createMockWallet("e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1");
     const client = new L402Client({ wallet, budgetSats: 1000 });
 
     const challengeResponse = new Response(
@@ -129,7 +129,7 @@ describe("L402Client", () => {
   });
 
   test("refuses (does not pay blind) when amountSats is non-numeric and unknown", async () => {
-    const wallet = createMockWallet("preimage2");
+    const wallet = createMockWallet("e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2");
     // Default onUnknownAmount="cap" with no maxPerRequestSats -> refuse.
     const client = new L402Client({ wallet, budgetSats: 1000 });
 
@@ -173,7 +173,7 @@ describe("L402Client", () => {
   });
 
   test("rejects when total budget would be exceeded", async () => {
-    const wallet = createMockWallet("preimage4");
+    const wallet = createMockWallet("e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4");
     const client = new L402Client({ wallet, budgetSats: 100 });
 
     const make402 = (sats: number) =>
@@ -201,7 +201,7 @@ describe("L402Client", () => {
   });
 
   test("spending accumulates across multiple requests", async () => {
-    const wallet = createMockWallet("preimage5");
+    const wallet = createMockWallet("e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5");
     const client = new L402Client({ wallet, budgetSats: 1000 });
 
     const make402 = (sats: number) =>
@@ -232,7 +232,7 @@ describe("payment retry", () => {
       payInvoice: mock(async () => {
         calls++;
         if (calls < 2) throw new Error("Failed to connect to wss://relay.example.com");
-        return { preimage: "p123" };
+        return { preimage: "0123012301230123012301230123012301230123012301230123012301230123" };
       }),
     };
     const client = new L402Client({ wallet });

@@ -55,7 +55,7 @@ describe("exportReceipts", () => {
 });
 
 describe("L402Client.exportReceipts", () => {
-  const wallet: WalletAdapter = { payInvoice: async () => ({ preimage: "aa" }) };
+  const wallet: WalletAdapter = { payInvoice: async () => ({ preimage: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }) };
 
   test("serializes the configured store with range filtering", () => {
     const store = new InMemoryReceiptStore();

@@ -312,6 +312,30 @@ describe("handleCallApi", () => {
     expect(result.content[0].text).not.toContain("Payment: charged");
   });
 
+  // L1: a caller-supplied Authorization header (delegated child token, or a
+  // credential minted elsewhere) is not this session's prepaid credit — the
+  // outcome line must not claim a burn it can't see.
+  test("labels an externally-supplied Authorization as an external credential", async () => {
+    const apiClient = makeApiClient();
+    const l402Client = makeL402Client({
+      request: mock(async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "X-Bolthub-Payment": "charged" },
+        }),
+      ),
+    } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/data", headers: { Authorization: "L402 mac:preimage" } },
+      apiClient,
+      l402Client,
+    );
+
+    expect(result.content[0].text).toContain("Payment: external credential accepted");
+    expect(result.content[0].text).not.toContain("prepaid use burned");
+  });
+
   test("no payment line when the gateway does not emit the headers", async () => {
     const apiClient = makeApiClient();
     const l402Client = makeL402Client({

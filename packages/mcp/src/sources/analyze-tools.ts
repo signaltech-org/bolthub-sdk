@@ -170,7 +170,9 @@ export async function handleAnalyzeListing(
     // ---- Public spec visibility ----
     let specPaths: Set<string> | null = null;
     try {
-      const res = await fetch(`${baseUrl}/gw/${tenant.slug}/.well-known/openapi.json`);
+      const res = await fetch(`${baseUrl}/gw/${tenant.slug}/.well-known/openapi.json`, {
+        signal: AbortSignal.timeout(15_000),
+      });
       if (res.ok) {
         const spec = (await res.json()) as { paths?: Record<string, Record<string, unknown>> };
         specPaths = new Set(
@@ -326,6 +328,7 @@ export async function handleAnalyzeListing(
     const order: Severity[] = ["HIGH", "MED", "LOW"];
     const lines: string[] = [
       `Listing audit — workspace "${tenant.name}", ${rows.length} endpoint(s) checked.`,
+      "Read-only: this audit changed nothing.",
       "",
     ];
     const highCount = findings.filter((f) => f.severity === "HIGH").length;
