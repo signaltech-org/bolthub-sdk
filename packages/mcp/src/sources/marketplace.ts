@@ -22,6 +22,15 @@ import {
   handleRevokeToken,
 } from "./marketplace-tools.js";
 import { handleDeployNode, handleNodeStatus } from "./node-tools.js";
+import { handleListApi, handlePublishListing, resolveAccountToken } from "./seller-tools.js";
+import { handleAnalyzeListing } from "./analyze-tools.js";
+import { handleGetEarnings, handleUsageSummary } from "./revenue-tools.js";
+import { handleConnectAccount, handleConnectStatus } from "./connect-tools.js";
+import {
+  handleCreateWorkspace,
+  handleConnectWallet,
+  handleGetOnboardingState,
+} from "./onboarding-tools.js";
 import type { SourceTool, ToolSource } from "./source.js";
 import type { PaymentServices } from "../payment.js";
 import type { ToolResult } from "@bolthub/pay";
@@ -157,28 +166,38 @@ const TOOLS: SourceTool[] = [
   {
     name: "deploy_node",
     description:
-      "Deploy a new Lightning node (LND + Neutrino) on a VPS. The node runs on the user's own server and is fully non-custodial. Returns a node ID to track progress. The user must complete wallet setup manually in the Lightning Terminal UI. Use node_status to check progress.",
+      "Deploy a Lightning node (LND + Neutrino) on the user's own VPS — fully non-custodial. GUIDED FLOW, call it repeatedly as the conversation progresses: (1) no arguments → provider menu with prices; (2) provider chosen but no credential stored → sign-up + access-token steps for that provider (the token itself is entered at bolthub.ai/nodes/deploy in the browser, never in chat); (3) credential present → region menu; (4) region → server sizes with monthly prices; (5) region + size (or size 'recommended') → deploys and returns the node id. The user then creates the wallet + seed phrase on their own node page; bind it as the payout wallet afterwards with connect_wallet.",
     inputSchema: {
       type: "object",
       properties: {
         provider: {
           type: "string",
           enum: ["hetzner", "digitalocean", "lunanode", "vultr", "scaleway"],
-          description:
-            "VPS provider. LunaNode is cheapest (~$3.50/mo) and accepts BTC, Hetzner ~$5.49/mo, Scaleway ~$6.42/mo, Vultr ~$10/mo (32 locations + accepts crypto), DigitalOcean ~$12/mo (global).",
+          description: "Chosen provider. Omit to get the provider menu with prices.",
         },
-        api_key: { type: "string", description: "VPS provider API key (e.g., Hetzner API token)" },
+        credential_id: {
+          type: "string",
+          description: "Stored VPS credential id. Omit when the account has exactly one (it's used automatically); the tool lists them when there are several.",
+        },
         region: {
           type: "string",
-          description: "Region slug (e.g., 'nbg1', 'fsn1'). Omit to use the first available region.",
+          description: "Region slug from the region menu step.",
+        },
+        size: {
+          type: "string",
+          description: "Server size slug from the sizes step, or 'recommended' for the cheapest (a Lightning node runs fine on it). Deploy starts only when both region and size are given.",
+        },
+        api_key: {
+          type: "string",
+          description: "DEPRECATED: passing a VPS key here puts it into chat context, and agent sessions can't store keys anyway. The tool walks the user through adding it at bolthub.ai/nodes/deploy instead.",
         },
         tor: {
           type: "boolean",
           description: "Enable Tor-only mode for maximum privacy. Default: false.",
         },
       },
-      required: ["provider", "api_key"],
     },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
   {
     name: "node_status",
@@ -191,6 +210,196 @@ const TOOLS: SourceTool[] = [
       },
       required: ["node_id"],
     },
+  },
+  {
+    name: "list_api",
+    description:
+      "Turn an API spec into a DRAFT bolthub listing: parses OpenAPI/Swagger or Postman (JSON or YAML), creates the endpoints as unlisted drafts (never visible in the directory), and applies a default per-request price you can refine. Publishing is a separate explicit step — use publish_listing. Requires BOLTHUB_ACCOUNT_TOKEN (your bolthub account, dashboard → MCP setup). Re-importing a spec for an origin that already has endpoints shows a dry-run diff instead of duplicating anything.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: {
+          type: "string",
+          description: "Workspace id to list into. Omit when the account has exactly one workspace; with several, the tool lists them so the user can pick.",
+        },
+        spec_url: {
+          type: "string",
+          description: "URL of the spec. Fetched server-side through bolthub's SSRF-safe proxy — never directly.",
+        },
+        spec_content: {
+          type: "string",
+          description:
+            'Inline spec instead of a URL: OpenAPI/Swagger/Postman JSON or YAML, or a plain JSON array of rows like [{"method":"GET","path":"/v1/x","title":"...","description":"..."}] for manual assembly from a conversation.',
+        },
+        origin_url: {
+          type: "string",
+          description: "Base URL of the upstream API (e.g. https://api.example.com). Required when the spec declares no servers/base URL; overrides it when it does.",
+        },
+        price_sats: {
+          type: "number",
+          description: "Per-request price in sats applied to the draft (default 5, minimum 1). Per-endpoint refinement happens in the dashboard before publishing.",
+        },
+        apply_sync: {
+          type: "boolean",
+          description: "Re-import only: after reviewing the dry-run diff from a previous call, set true to apply it. Sync updates spec-owned fields only and never touches pricing.",
+        },
+      },
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "publish_listing",
+    description:
+      "Take a workspace's draft endpoints live in the bolthub directory. Without confirm:true it is a DRY RUN that shows exactly what would go live (endpoints, prices, workspace activation) — show that to the user and get their go-ahead before re-calling with confirm:true. Publishing the first endpoint starts the workspace's 30-day free trial. Requires BOLTHUB_ACCOUNT_TOKEN.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: {
+          type: "string",
+          description: "Workspace id. Omit when the account has exactly one workspace.",
+        },
+        endpoint_ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Specific endpoint ids to publish. Omit to publish every unlisted endpoint in the workspace.",
+        },
+        confirm: {
+          type: "boolean",
+          description: "Omitted/false = dry run (no changes). true = publish exactly what the dry run showed.",
+        },
+      },
+    },
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "analyze_listing",
+    description:
+      "Audit a bolthub listing you own against the seller-guide rubric and get a prioritized punch list (HIGH/MED/LOW findings with evidence and a fix pointer). Checks origin protection (is the paywall bypassable? is bolthub's signed traffic being rejected?), honest status codes, docs/examples quality, public schema visibility, uptime and p95 latency, pricing-model fit, samples, and free-try. Read-only — changes nothing. Useful before publish_listing and any time revenue looks off. Requires BOLTHUB_ACCOUNT_TOKEN.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: {
+          type: "string",
+          description: "Workspace id. Omit when the account has exactly one workspace.",
+        },
+        endpoint_id: {
+          type: "string",
+          description: "Audit a single endpoint instead of the whole listing.",
+        },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "get_earnings",
+    description:
+      "Revenue report for a bolthub workspace you own: all-time and windowed earnings in sats, recent paid days, and top-earning endpoints. Read-only. Requires BOLTHUB_ACCOUNT_TOKEN.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: {
+          type: "string",
+          description: "Workspace id. Omit when the account has exactly one workspace.",
+        },
+        days: {
+          type: "number",
+          description: "Reporting window in days for the recent-revenue figures (default 30, max 365). All-time totals are always included.",
+        },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "usage_summary",
+    description:
+      "Operational usage for a bolthub workspace you own: billing status and projected platform fee for the current cycle, paid traffic by endpoint, and SDK-tool (facilitator) usage. Pass endpoint_id for one endpoint's latency/error detail. Read-only. Requires BOLTHUB_ACCOUNT_TOKEN.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: {
+          type: "string",
+          description: "Workspace id. Omit when the account has exactly one workspace.",
+        },
+        endpoint_id: {
+          type: "string",
+          description: "Drill into one endpoint: request count, success rate, avg/p95 latency, error breakdown.",
+        },
+        days: {
+          type: "number",
+          description: "Window for SDK-tool usage figures (default 30, max 365).",
+        },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "connect_account",
+    description:
+      "One-click connect this MCP server to the user's bolthub account. Starts a browser pairing: returns an approval link and a short confirmation code — show BOTH to the user and tell them to check the codes match before approving. After they approve, call connect_status to finish. The minted account token is stored locally and never appears in chat. Use when a seller tool reports no account token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        label: {
+          type: "string",
+          description: "Name shown on the approval page and in the dashboard token list. Defaults to 'Claude Desktop on <hostname>'.",
+        },
+      },
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "connect_status",
+    description:
+      "Finish or check the account pairing started by connect_account. Call it after the user says they approved in the browser. On success the account token is stored locally (never shown in chat) and the seller tools start working.",
+    inputSchema: { type: "object", properties: {} },
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "create_workspace",
+    description:
+      "Create a new bolthub workspace (tenant) for selling APIs. Secret-free and reversible: an empty workspace costs nothing and the 30-day trial only starts when a first endpoint is published. Wallet connection is a separate step (connect_wallet). Requires an account token (connect_account).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Workspace display name." },
+        slug: {
+          type: "string",
+          description: "URL slug (lowercase letters, digits, hyphens; 3-63 chars). Omit to derive from the name; taken slugs get a numbered variant automatically.",
+        },
+        description: { type: "string", description: "Optional workspace description shown in the directory." },
+        tags: { type: "array", items: { type: "string" }, description: "Optional directory tags (max 10)." },
+      },
+      required: ["name"],
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  {
+    name: "connect_wallet",
+    description:
+      "Check or set up the payout wallet for a workspace. A deployed bolthub node can be bound directly (pass node_id — the credential copy is server-side, nothing secret enters chat). Other wallets connect in the browser: the tool returns the dashboard link plus guidance for self-hosted LND (invoice-only macaroon) and always-on NWC services; the chat only ever sees connected yes/no and reachability. Re-run after the user connects to confirm. Non-custodial: sats settle directly to the user's wallet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string", description: "Workspace id. Omit when the account has exactly one workspace." },
+        node_id: {
+          type: "string",
+          description: "Bind this deployed bolthub node as the payout wallet (from deploy_node/node_status, or the list this tool shows). Server-side credential copy; changes where payouts land.",
+        },
+      },
+    },
+    annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  },
+  {
+    name: "get_onboarding_state",
+    description:
+      "One-look onboarding checklist for a workspace: wallet connected, endpoints drafted/published, origin-protection verdict (live probe), listing live, trial state — plus the single next step. Use it to drive the seller onboarding conversation. Read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tenant_id: { type: "string", description: "Workspace id. Omit when the account has exactly one workspace." },
+      },
+    },
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
 ];
 
@@ -258,13 +467,69 @@ export class MarketplaceSource implements ToolSource {
         return handleDeployNode(
           args as Parameters<typeof handleDeployNode>[0],
           this.apiUrl,
-          process.env.BOLTHUB_AUTH_TOKEN,
+          resolveAccountToken(),
         );
       case "node_status":
         return handleNodeStatus(
           args as Parameters<typeof handleNodeStatus>[0],
           this.apiUrl,
-          process.env.BOLTHUB_AUTH_TOKEN,
+          resolveAccountToken(),
+        );
+      case "list_api":
+        return handleListApi(
+          args as Parameters<typeof handleListApi>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "publish_listing":
+        return handlePublishListing(
+          args as Parameters<typeof handlePublishListing>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "analyze_listing":
+        return handleAnalyzeListing(
+          args as Parameters<typeof handleAnalyzeListing>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "get_earnings":
+        return handleGetEarnings(
+          args as Parameters<typeof handleGetEarnings>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "usage_summary":
+        return handleUsageSummary(
+          args as Parameters<typeof handleUsageSummary>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "connect_account":
+        return handleConnectAccount(
+          args as Parameters<typeof handleConnectAccount>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "connect_status":
+        return handleConnectStatus({}, this.apiUrl, resolveAccountToken());
+      case "create_workspace":
+        return handleCreateWorkspace(
+          args as Parameters<typeof handleCreateWorkspace>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "connect_wallet":
+        return handleConnectWallet(
+          args as Parameters<typeof handleConnectWallet>[0],
+          this.apiUrl,
+          resolveAccountToken(),
+        );
+      case "get_onboarding_state":
+        return handleGetOnboardingState(
+          args as Parameters<typeof handleGetOnboardingState>[0],
+          this.apiUrl,
+          resolveAccountToken(),
         );
       default:
         throw new Error(`Unknown marketplace tool "${name}"`);

@@ -9,13 +9,13 @@
     "subfolder": "packages/mcp"
   },
   "websiteUrl": "https://docs.bolthub.ai/docs/sdks/mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@bolthub/mcp",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         {
@@ -69,8 +69,8 @@
           "placeholder": "1000"
         },
         {
-          "name": "BOLTHUB_AUTH_TOKEN",
-          "description": "Optional bolthub API token, used only by the deploy_node / node_status Node Launcher tools.",
+          "name": "BOLTHUB_ACCOUNT_TOKEN",
+          "description": "Account token for tools that act on YOUR bolthub account (workspace, listing, audit, earnings, and node tools). Optional even for those: the connect_account tool pairs via the browser instead. Never needed to discover, call, or pay for APIs — buying is account-less.",
           "isRequired": false,
           "isSecret": true
         }

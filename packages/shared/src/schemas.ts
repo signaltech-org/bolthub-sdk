@@ -190,6 +190,10 @@ export const createEndpointSchema = z
     rateLimitPerMinute: z.number().int().positive().optional(),
     freeTryEnabled: z.boolean().optional(),
     liveSampleEnabled: z.boolean().optional(),
+    // Omitted → DB default (true, visible in the directory once the tenant
+    // is live). Agent-driven imports (mcp list_api) pass an explicit false
+    // so drafts can never leak into the directory between create and review.
+    directoryListed: z.boolean().optional(),
     streaming: z.boolean().optional(),
     maxStreamSeconds: z.number().int().positive().optional(),
     idleTimeoutSeconds: z.number().int().positive().optional(),

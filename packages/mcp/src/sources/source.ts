@@ -7,6 +7,12 @@ export interface SourceTool {
   description?: string;
   /** Raw JSON Schema, forwarded to the upstream client byte-for-byte. */
   inputSchema: Record<string, unknown>;
+  /**
+   * MCP tool annotations (readOnlyHint, destructiveHint, …), forwarded
+   * verbatim like inputSchema. Optional — most existing tools predate
+   * annotations and omit them.
+   */
+  annotations?: Record<string, unknown>;
 }
 
 /**

@@ -28,6 +28,7 @@ export function createUnifiedServer(aggregate: Aggregate, options: UnifiedServer
       name: t.publicName,
       description: t.description,
       inputSchema: t.inputSchema as { type: "object"; [k: string]: unknown },
+      ...(t.annotations ? { annotations: t.annotations } : {}),
     })),
   }));
 

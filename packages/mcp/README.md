@@ -2,7 +2,8 @@
 
 The bolthub MCP server. **One entry** in your MCP client config; behind it, three kinds of tool source sharing one wallet and one Lightning budget:
 
-- **The bolthub marketplace** — search, inspect, and call every listed API (`search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_bundle`, `mint_scoped_token`, `revoke_token`, plus the Node Launcher tools).
+- **The bolthub marketplace** — search, inspect, and call every listed API (`search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_credit`, `mint_scoped_token`, `revoke_token`, plus the Node Launcher tools).
+- **Your own API as a listing** — turn an OpenAPI/Postman spec into a draft paywalled listing, audit it against the seller rubric, take it live when you're ready, and track what it earns (`list_api`, `analyze_listing`, `publish_listing`, `get_earnings`, `usage_summary`). These act on your account, so they need a token: say "connect my bolthub account" (`connect_account` runs a one-click browser pairing; nothing secret touches the chat) or set `BOLTHUB_ACCOUNT_TOKEN` yourself. Buying stays account-less. Drafts stay invisible until you explicitly publish.
 - **Specific L402 gateways** — a gateway's OpenAPI endpoints become directly-named tools.
 - **Your other MCP servers** — local or remote, proxied transparently: free tools pass straight through; a tool that answers with an L402 payment challenge is paid inside your budget and retried.
 
@@ -69,7 +70,7 @@ Then point the client at it:
 
 ### What the agent sees
 
-- Marketplace meta-tools, unprefixed: `search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_bundle`, `mint_scoped_token`, `revoke_token`, `deploy_node`, `node_status`.
+- Marketplace meta-tools, unprefixed: `search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_credit`, `mint_scoped_token`, `revoke_token`, `deploy_node`, `node_status`, `list_api`, `analyze_listing`, `publish_listing`, `get_earnings`, `usage_summary`, `connect_account`, `connect_status`, `create_workspace`, `connect_wallet`, `get_onboarding_state`.
 - Gateway endpoints, prefixed by gateway slug: `btc-intel__get_v1_history_candles`, ….
 - Downstream MCP tools, prefixed by their config key: `filesystem__read_file`, ….
 

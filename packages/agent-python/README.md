@@ -48,7 +48,7 @@ from bolthub import LndWallet
 
 wallet = LndWallet(
     host="https://your-lnd-node:8080",
-    macaroon="admin-macaroon-hex",
+    macaroon="scoped-macaroon-hex",  # bake payment-scoped, never admin.macaroon
     timeout_seconds=30,
 )
 ```
