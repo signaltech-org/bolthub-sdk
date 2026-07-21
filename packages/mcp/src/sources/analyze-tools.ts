@@ -112,9 +112,7 @@ export async function handleAnalyzeListing(
     }
 
     const findings: Finding[] = [];
-    const notes: string[] = [
-      "402-challenge rate (quotes that never convert) isn't surfaced by the API yet — not auditable in v1.",
-    ];
+    const notes: string[] = [];
 
     // Payout wallet dark = every check below is moot: nothing can be sold.
     if (tenant.walletReachable === false) {
@@ -206,6 +204,7 @@ export async function handleAnalyzeListing(
     const slowP95: string[] = [];
     const dishonest: string[] = [];
     const lowTraffic = new Set<string>();
+    let anyTrafficMeasured = false;
     for (const row of detailRows) {
       const [health, logs] = await Promise.all([
         apiRequest<HealthResponse>(
@@ -219,6 +218,7 @@ export async function handleAnalyzeListing(
           { token: authToken },
         ),
       ]);
+      if (logs.totalRequests > 0 || health.uptimePercentage != null) anyTrafficMeasured = true;
       if (health.uptimePercentage != null && health.uptimePercentage < UPTIME_FLOOR_PCT) {
         lowUptime.push(`${label(row)} (${health.uptimePercentage.toFixed(1)}%)`);
       }
@@ -323,6 +323,27 @@ export async function handleAnalyzeListing(
         text: `[discovery] Free-try disabled on low-traffic endpoint(s): ${nameList(noFreeTry)}. Fix: one free call per buyer removes the try-before-buy barrier while you're building reputation.`,
       });
     }
+
+    // ---- Rubric coverage ----
+    // Every rubric area is named exactly once — ran or skipped-with-reason —
+    // so a quiet report can't be mistaken for a complete one. 2026-07-16
+    // smoke finding: on a fresh draft listing the traffic and free-try
+    // checks are inapplicable and used to vanish silently, which read as
+    // "audited and clean".
+    const anyListed = rows.some((r) => r.directoryListed);
+    const coverage = [
+      checkedOrigins.length > 0 ? "origin protection ✓" : "origin protection skipped (no origins)",
+      specPaths ? "schema visibility ✓" : "schema visibility skipped (public spec unreachable)",
+      anyTrafficMeasured
+        ? "traffic quality (uptime/latency/error honesty) ✓"
+        : "traffic quality (uptime/latency/error honesty) skipped (no traffic yet)",
+      "docs & examples ✓",
+      "pricing ✓",
+      "samples ✓",
+      anyListed ? "free-try ✓" : "free-try skipped (drafts only; applies once directory-listed)",
+      "402-challenge rate not auditable in v1",
+    ];
+    notes.unshift(`Rubric coverage: ${coverage.join(" · ")}.`);
 
     // ---- Report ----
     const order: Severity[] = ["HIGH", "MED", "LOW"];

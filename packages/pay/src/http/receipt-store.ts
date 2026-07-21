@@ -104,6 +104,12 @@ export class FileReceiptStore implements ReceiptStore {
     this.filePath = filePath ?? join(DEFAULT_DIR, DEFAULT_FILE);
   }
 
+  /** Where this ledger lives — diagnostics surfaces (export empty-states)
+   *  print it so a path/scoping mismatch is visible on sight. */
+  get path(): string {
+    return this.filePath;
+  }
+
   append(receipt: Receipt): void {
     const dir = dirname(this.filePath);
     try {

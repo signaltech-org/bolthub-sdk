@@ -59,7 +59,7 @@ async function isSlugFree(baseUrl: string, token: string, slug: string): Promise
 }
 
 export async function handleCreateWorkspace(
-  args: { name: string; slug?: string; description?: string; tags?: string[] },
+  args: { name: string; slug?: string; description?: string; tags?: string[]; wallet_node_id?: string },
   apiUrl?: string,
   authToken?: string,
 ): Promise<ToolResult> {
@@ -118,15 +118,62 @@ export async function handleCreateWorkspace(
       token: authToken,
     });
 
-    return textResult(
-      [
-        `Workspace "${tenant.name}" created (slug: ${tenant.slug}).`,
-        `Gateway domain reserved: ${getGatewayUrl(tenant.slug, "/")}`,
-        "",
-        "It's free while empty — the 30-day trial only starts when you publish a first endpoint.",
-        "Next: connect_wallet so payouts have somewhere to land, then list_api to draft your listing.",
-      ].join("\n"),
-    );
+    const head = [
+      `Workspace "${tenant.name}" created (slug: ${tenant.slug}).`,
+      `Gateway domain reserved: ${getGatewayUrl(tenant.slug, "/")}`,
+      "",
+      "It's free while empty — the 30-day trial only starts when you publish a first endpoint.",
+    ];
+
+    // Bind a deployed node as the payout wallet in the same call when the
+    // caller passed one. Best-effort: a bind failure leaves the (already
+    // created) workspace walletless rather than failing the whole create.
+    if (args.wallet_node_id) {
+      try {
+        const bind = await apiRequest<{ connected: boolean; node?: NodeCapacity }>(
+          baseUrl,
+          `/nodes/${args.wallet_node_id}/connect-wallet`,
+          { method: "POST", body: { tenantId: tenant.id }, token: authToken },
+        );
+        head.push(
+          "",
+          `Node ${args.wallet_node_id} is now the payout wallet (LND via Node Launcher, invoice-only macaroon copied server-side — nothing touched this chat).`,
+        );
+        const warning = nodeCapacityWarning(bind.node);
+        if (warning) head.push(...warning);
+        head.push("", "Next: list_api to draft your listing.");
+        return textResult(head.join("\n"));
+      } catch (bindErr) {
+        head.push(
+          "",
+          `Workspace created, but binding node ${args.wallet_node_id} failed: ${bindErr instanceof Error ? bindErr.message : String(bindErr)}. Connect a wallet later with connect_wallet.`,
+        );
+        return textResult(head.join("\n"));
+      }
+    }
+
+    // No node passed: if the account already has a ready node, point at it so
+    // the agent can offer a one-call bind. A wallet stays optional until a
+    // paid endpoint is published, so this is a suggestion, never a blocker.
+    let walletHint =
+      "Next: connect_wallet so payouts have somewhere to land, then list_api to draft your listing.";
+    try {
+      const { nodes } = await apiRequest<{ nodes: NodeRow[] }>(baseUrl, "/nodes", {
+        token: authToken,
+      });
+      const bindable = nodes.filter((n) => n.status === "ready" && n.hasInvoicesMacaroon);
+      if (bindable.length > 0) {
+        walletHint =
+          `Next: you already have a deployed node ready (${nodeLabel(bindable[0])}) — ` +
+          `bind it as the payout wallet with connect_wallet node_id "${bindable[0].id}" ` +
+          `(or re-create with wallet_node_id next time). Then list_api to draft your listing.`;
+      }
+    } catch {
+      // Node lookup is advisory — never fail create over it.
+    }
+
+    head.push("", "A wallet is optional until you publish a paid endpoint; then it's required.", walletHint);
+    return textResult(head.join("\n"));
   } catch (err) {
     return errorResult(
       `create_workspace failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -297,7 +344,7 @@ export async function handleConnectWallet(
 
     return textResult(
       [
-        `No wallet connected for "${tenant.name}" yet. Wallet credentials are secrets, so they're entered in the browser — never in this chat.`,
+        `No wallet connected for "${tenant.name}" yet. A wallet is optional until you publish a paid endpoint — then it's required (publishing a paid endpoint without one is blocked). Wallet credentials are secrets, so they're entered in the browser — never in this chat.`,
         "",
         `1. Open: ${SITE_URL}/payouts`,
         `2. Make sure "${tenant.name}" is the selected workspace`,
@@ -381,6 +428,10 @@ export async function handleGetOnboardingState(
     const drafts = endpoints.filter((e) => !e.directoryListed);
     const published = endpoints.filter((e) => e.directoryListed && e.isActive);
     const unpriced = endpoints.filter((e) => !e.pricingRules?.length);
+    // Paid drafts + no wallet = the paid-publish gate (UR-68) would block a
+    // publish_listing. Surface it so the agent connects a wallet first.
+    const paidDrafts = drafts.filter((e) => (e.pricingRules?.length ?? 0) > 0);
+    const gateWouldTrip = !tenant.walletConnected && paidDrafts.length > 0;
     const live = published.length > 0 && tenant.status === "active" && tenant.directoryListed;
 
     // Origin protection: probe up to the cap, worst verdict wins.
@@ -425,7 +476,10 @@ export async function handleGetOnboardingState(
       next = "fix the payout wallet — it's unreachable, so every buyer payment fails at invoice creation (connect_wallet has the details).";
     else if (nodeNotPayable)
       next = `get an inbound channel on node ${boundNode!.id} — it's reachable but can't receive a sat (open a channel to it from another node, or buy inbound via its Lightning Terminal; node_status has the steps).`;
-    else if (!tenant.walletConnected) next = "connect_wallet — payouts need somewhere to land.";
+    else if (!tenant.walletConnected)
+      next = gateWouldTrip
+        ? `connect_wallet — ${paidDrafts.length} paid draft endpoint(s) can't be published until a wallet is connected (the publish is blocked otherwise).`
+        : "connect_wallet — payouts need somewhere to land.";
     else if (endpoints.length === 0) next = "list_api with your OpenAPI/Postman spec to draft the listing.";
     else if (protectionBad)
       next = "fix origin protection (analyze_listing has the evidence; no-code recipes: https://docs.bolthub.ai/docs/guides/origin-protection#no-code-platform-recipes).";

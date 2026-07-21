@@ -31,6 +31,8 @@ export interface PaymentServices {
    * TPP payments don't yet expose the preimage to record.
    */
   receiptStore?: ReceiptStore;
+  /** Resolved ledger location, for diagnostics in export_receipts output. */
+  receiptsPath?: string;
 }
 
 export function createPaymentServices(
@@ -39,7 +41,8 @@ export function createPaymentServices(
 ): PaymentServices {
   const budget = new Budget({ maxTotal: config.budget, maxPerCall: config.maxPerCall });
   const receiptStore = config.receipts ? new FileReceiptStore(config.receipts.path) : undefined;
-  if (!wallet) return { budget, receiptStore };
+  const receiptsPath = receiptStore?.path;
+  if (!wallet) return { budget, receiptStore, receiptsPath };
 
   const l402Client = new L402Client({
     wallet,
@@ -54,5 +57,5 @@ export function createPaymentServices(
     budget,
     onPaid: audit,
   });
-  return { budget, wallet, l402Client, toolClient, receiptStore };
+  return { budget, wallet, l402Client, toolClient, receiptStore, receiptsPath };
 }

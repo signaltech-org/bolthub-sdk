@@ -9,14 +9,39 @@ import type { SourceTool, ToolSource } from "./source.js";
  * Unprefixed like the marketplace meta-tools: it is part of the server's
  * native surface, not a downstream source.
  */
+export interface ReceiptsSourceOpts {
+  /** Resolved ledger location; shown in output so a path mismatch is visible. */
+  ledgerPath?: string;
+  /**
+   * Recording health from the paying client. Settled payments whose ledger
+   * append failed must surface here — a silently missing receipt is missing
+   * money history (2026-07-16 smoke finding 4).
+   */
+  recordingHealth?: () => { count: number; last?: string };
+}
+
 export class ReceiptsSource implements ToolSource {
   readonly key = "receipts";
   readonly kind = "receipts" as const;
   readonly namespaced = false;
 
-  constructor(private store: ReceiptStore) {}
+  constructor(
+    private store: ReceiptStore,
+    private opts: ReceiptsSourceOpts = {},
+  ) {}
 
   async init(): Promise<void> {}
+
+  /** Non-empty when receipt writes failed this session. */
+  private failureWarning(): string {
+    const health = this.opts.recordingHealth?.();
+    if (!health || health.count === 0) return "";
+    return (
+      `\nWARNING: ${health.count} receipt write(s) FAILED this session` +
+      `${health.last ? ` (last: ${health.last})` : ""} — paid calls are missing from this ledger. ` +
+      `Check that the ledger location is writable.`
+    );
+  }
 
   listTools(): SourceTool[] {
     return [
@@ -25,6 +50,7 @@ export class ReceiptsSource implements ToolSource {
         description:
           "Export this machine's L402 payment receipts (cryptographic proof-of-payment records: " +
           "invoice, payment hash, preimage, amount, endpoint, timestamp). " +
+          "Recording starts when receipts are enabled — payments made before that are never backfilled. " +
           "Use redact to strip preimages for a shareable expense report.",
         inputSchema: {
           type: "object",
@@ -58,14 +84,24 @@ export class ReceiptsSource implements ToolSource {
     }
 
     const receipts = this.store.list(range);
+    const ledger = this.opts.ledgerPath ? ` Ledger: ${this.opts.ledgerPath}.` : "";
+    const warning = this.failureWarning();
     if (receipts.length === 0) {
       return {
-        content: [{ type: "text", text: "No receipts recorded (in this range). Paid calls made while receipts are configured will appear here." }],
+        content: [
+          {
+            type: "text",
+            text:
+              `No receipts recorded (in this range).${ledger} ` +
+              `Recording happens at payment time once receipts are enabled; earlier payments are never backfilled. ` +
+              `Paid calls made while receipts are configured will appear here.${warning}`,
+          },
+        ],
       };
     }
     const format = args.format === "csv" ? "csv" : "json";
     const text = exportReceipts(receipts, { format, redact: args.redact === true });
-    return { content: [{ type: "text", text: `${receipts.length} receipt(s):\n${text}` }] };
+    return { content: [{ type: "text", text: `${receipts.length} receipt(s):${warning}\n${text}` }] };
   }
 
   async close(): Promise<void> {}

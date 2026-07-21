@@ -101,9 +101,62 @@ describe("handleAnalyzeListing", () => {
     const result = await handleAnalyzeListing({}, API, TOKEN);
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain("No findings");
+    // Even a clean report names every rubric area, so silence ≠ not-run.
+    expect(result.content[0].text).toContain("Rubric coverage:");
     // only the origin-check probe is a POST; everything else must be GET
     const writes = recorded.filter((r) => r.method !== "GET");
     expect(writes).toEqual([{ method: "POST", path: "/tenants/t-1/origins/o-1/check" }]);
+  });
+
+  test("bare draft-only listing mentions docs/samples/free-try one way or the other", async () => {
+    // 2026-07-16 smoke finding: a fresh list_api import (no descriptions,
+    // no examples, no samples, drafts unlisted, zero traffic) produced an
+    // audit with only the origin finding — the inapplicable checks vanished
+    // silently and the report read as complete.
+    const bareDraft = (id: string, path: string) =>
+      endpointRow({
+        id,
+        path,
+        title: null,
+        description: null,
+        parameters: null,
+        exampleRequest: null,
+        exampleResponse: null,
+        latestSampleId: null,
+        freeTryEnabled: false,
+        directoryListed: false,
+      });
+    const zeroLogs = {
+      totalRequests: 0,
+      successRate: 0,
+      p95LatencyMs: 0,
+      errorBreakdown: { timeout: 0, connectionError: 0, origin5xx: 0, origin4xx: 0 },
+    };
+    const noHealth = { isHealthy: true, uptimePercentage: null, avgResponseTimeMs: null };
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/endpoints": { endpoints: [bareDraft("ep-1", "/get"), bareDraft("ep-2", "/json")] },
+      "POST /tenants/t-1/origins/o-1/check": {
+        check: { verdict: "public", signed: { statusCode: 200 }, unsigned: { statusCode: 200 } },
+      },
+      "GET /tenants/t-1/endpoints/ep-1/health": noHealth,
+      "GET /tenants/t-1/endpoints/ep-2/health": noHealth,
+      "GET /tenants/t-1/endpoints/ep-1/logs/summary": zeroLogs,
+      "GET /tenants/t-1/endpoints/ep-2/logs/summary": zeroLogs,
+      // no .well-known route → spec fetch 404s → schema check skipped
+    });
+    const result = await handleAnalyzeListing({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(result.isError).toBeUndefined();
+    // The structural checks fire on genuinely bare drafts…
+    expect(text).toContain("Missing/thin descriptions");
+    expect(text).toContain("No example request/response or captured sample");
+    // …and every inapplicable rubric area is disclosed, not omitted.
+    expect(text).toContain("free-try skipped (drafts only");
+    expect(text).toContain("traffic quality (uptime/latency/error honesty) skipped (no traffic yet)");
+    expect(text).toContain("schema visibility skipped");
+    expect(text).toContain("402-challenge rate not auditable in v1");
+    expect(text).toContain("samples ✓");
   });
 
   test("public origin verdict is a HIGH finding", async () => {

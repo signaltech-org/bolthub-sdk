@@ -327,11 +327,12 @@ export async function handleDeployNode(
             `The node will be ready in about 5 minutes.`,
             `Use the node_status tool with node_id "${node.id}" to check progress — or node_status with wait_for "wallet_pending" to block until the VPS is up and the wallet step is next.`,
             ``,
-            `IMPORTANT: The user must complete wallet setup manually.`,
+            `IMPORTANT: The user finishes setup in the browser.`,
             `When the status reaches "wallet_pending", send them to`,
-            `${SITE_URL}/nodes/${node.id} — it walks them through creating the`,
-            `wallet in Lightning Terminal and writing down the 24-word seed`,
-            `phrase, then they confirm "I've backed up my seed" there.`,
+            `${SITE_URL}/nodes/${node.id} — the page shows a setup checklist:`,
+            `create the wallet (write down the 24-word seed, save the Lightning`,
+            `Terminal password), connect the node to their browser, then set`,
+            `receiving capacity. The page tells them when to head back to this chat.`,
             ``,
             `The seed phrase is generated on the user's VPS and never touches bolthub.`,
             ``,
@@ -393,6 +394,13 @@ const NODE_STATUS_RANK: Record<string, number> = {
 const DEFAULT_WAIT_TIMEOUT_S = 120;
 const MAX_WAIT_TIMEOUT_S = 600;
 const WAIT_POLL_MS = 10_000;
+// Desktop MCP transports abort tool calls held open past ~4 minutes
+// (Claude Desktop killed a 600s wait at ~240s, 2026-07-16 smoke test),
+// which would kill the wait before timeout_s can fire. A single call
+// therefore blocks at most this long; if budget remains, the tool
+// returns a WAIT PAUSED result telling the agent to re-call with the
+// remaining budget.
+export const MAX_WAIT_SLICE_S = 150;
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -462,6 +470,9 @@ export async function handleNodeStatus(
 
     const started = Date.now();
     const deadline = started + timeoutS * 1000;
+    // One call never blocks longer than the transport-safe slice; the
+    // rest of the budget is handed back to the caller to continue with.
+    const sliceDeadline = started + Math.min(timeoutS, MAX_WAIT_SLICE_S) * 1000;
     let polls = 0;
     let node = await fetchNodeStatus(baseUrl, args.node_id, authToken);
     polls++;
@@ -490,21 +501,41 @@ export async function handleNodeStatus(
               {
                 type: "text",
                 text:
-                  `WAIT STOPPED (not a timeout): node ${node.id} is in "wallet_pending", and only the user can advance it — they must create the node's wallet at ${SITE_URL}/nodes/${node.id} (24-word seed, generated on their VPS). ` +
+                  `WAIT STOPPED (not a timeout): node ${node.id} is in "wallet_pending", and only the user can advance it — the setup checklist at ${SITE_URL}/nodes/${node.id} walks them through it (24-word seed + Lightning Terminal password, generated on their VPS). ` +
                   `Waiting for "${target}" cannot progress until that's done. Ask the user to complete it, then re-run node_status with wait_for "${target}".`,
               },
             ],
             isError: true,
           };
         }
-        if (Date.now() + pollIntervalMs > deadline) {
+        if (Date.now() + pollIntervalMs > sliceDeadline) {
+          const stateLine = `Current state: status ${node.status}, channels ${node.activeChannelCount ?? "unmeasured"}, inbound ${node.receivingCapacitySat ?? "unmeasured"} sats${node.lastError ? `, error: ${node.lastError}` : ""}.`;
+          if (sliceDeadline < deadline) {
+            // Budget remains, but holding the call open longer risks the
+            // client killing it. Pause and hand the remainder back.
+            const elapsedS = Math.round((Date.now() - started) / 1000);
+            const remainingS = Math.max(5, timeoutS - elapsedS);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text:
+                    `WAIT PAUSED (not a timeout, not a failure): still "${node.status}" after ${elapsedS}s (${polls} check(s)). ` +
+                    `Desktop MCP clients abort tool calls held open past ~4 minutes, so node_status waits at most ${MAX_WAIT_SLICE_S}s per call. ` +
+                    `${remainingS}s of your ${timeoutS}s budget remains — call node_status again with wait_for "${target}" and timeout_s ${remainingS} to continue. ` +
+                    `This one re-call is the expected pattern, not tight-loop polling.\n` +
+                    stateLine,
+                },
+              ],
+            };
+          }
           return {
             content: [
               {
                 type: "text",
                 text:
                   `TIMED OUT after ${timeoutS}s (${polls} check(s)) waiting for "${target}" — ${NODE_WAIT_TARGETS[target]}.\n` +
-                  `Current state: status ${node.status}, channels ${node.activeChannelCount ?? "unmeasured"}, inbound ${node.receivingCapacitySat ?? "unmeasured"} sats${node.lastError ? `, error: ${node.lastError}` : ""}.\n` +
+                  stateLine + "\n" +
                   waitTimeoutGuidance(target, node),
               },
             ],
@@ -538,9 +569,11 @@ export async function handleNodeStatus(
       lines.push(
         "",
         "ACTION REQUIRED: the user must create the node's wallet.",
-        `Send them to ${SITE_URL}/nodes/${node.id} — it opens the Lightning`,
-        "Terminal UI and walks them through writing down the 24-word seed",
-        "phrase (generated on their VPS; bolthub never sees it).",
+        `Send them to ${SITE_URL}/nodes/${node.id} — the setup checklist there`,
+        "walks them through it: create the wallet (24-word seed + Lightning",
+        "Terminal password; the seed is generated on their VPS, bolthub never",
+        "sees it), connect the node to their browser, then set receiving",
+        "capacity. The page tells them when to head back to this chat.",
         "",
         "If Lightning Terminal shows \"LND is not running\", the node is still",
         "booting — that error is expected for the first few minutes after the",
@@ -593,6 +626,28 @@ export async function handleNodeStatus(
   }
 }
 
+/**
+ * Error thrown by `apiRequest` for a non-2xx response. Carries the API's
+ * machine-readable `code` (e.g. "WALLET_REQUIRED") so handlers can branch on
+ * it instead of string-matching the human message. Extends Error, so existing
+ * `err instanceof Error` / `err.message` call sites keep working.
+ */
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+    public code?: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+/** True when `err` is the API's paid-publish gate (UR-68). */
+export function isWalletRequiredError(err: unknown): boolean {
+  return err instanceof ApiError && err.code === "WALLET_REQUIRED";
+}
+
 /** Owner-API request helper, shared with seller-tools.ts (same JWT auth). */
 export async function apiRequest<T>(
   baseUrl: string,
@@ -613,8 +668,8 @@ export async function apiRequest<T>(
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error((body as { error?: string }).error ?? `API returned ${res.status}`);
+    const body = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
+    throw new ApiError(res.status, body.error ?? `API returned ${res.status}`, body.code);
   }
 
   return res.json() as Promise<T>;

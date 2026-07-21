@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { handleNodeStatus } from "../sources/node-tools";
+import { handleNodeStatus, MAX_WAIT_SLICE_S } from "../sources/node-tools";
 
 const API = "https://api.test";
 const TOKEN = "jwt-secret-token";
@@ -147,6 +147,40 @@ describe("node_status wait_for behavior", () => {
     expect(text).toContain("on-chain confirmations");
     expect(text).toContain("channels 0");
     expect(requestCount).toBe(1);
+  });
+
+  test("a budget above the transport-safe slice pauses instead of blocking to death", async () => {
+    // 2026-07-16 smoke finding: Claude Desktop aborts tool calls held open
+    // past ~4 minutes, so a 600s in-call wait can never reach its own
+    // timeout. The wait must pause at the slice and hand the budget back.
+    mockNodeSequence([{ status: "provisioning" }]);
+    const result = await handleNodeStatus(
+      { node_id: "node-1", wait_for: "wallet_pending", timeout_s: 600 },
+      API,
+      TOKEN,
+      HUGE * 10, // next poll would overshoot the 150s slice immediately
+    );
+    expect(result.isError).toBeUndefined(); // a pause is not a failure
+    const text = result.content[0].text;
+    expect(text).toContain("WAIT PAUSED");
+    expect(text).toContain(`at most ${MAX_WAIT_SLICE_S}s per call`);
+    expect(text).toContain('wait_for "wallet_pending"');
+    expect(text).toMatch(/timeout_s \d+ to continue/);
+    expect(text).toContain('still "provisioning"');
+    expect(requestCount).toBe(1);
+  });
+
+  test("a budget within the slice still times out as an error", async () => {
+    mockNodeSequence([{ status: "provisioning" }]);
+    const result = await handleNodeStatus(
+      { node_id: "node-1", wait_for: "wallet_pending", timeout_s: MAX_WAIT_SLICE_S },
+      API,
+      TOKEN,
+      HUGE * 10,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(`TIMED OUT after ${MAX_WAIT_SLICE_S}s`);
+    expect(result.content[0].text).not.toContain("WAIT PAUSED");
   });
 
   test("terminal error state fails immediately with the node error", async () => {

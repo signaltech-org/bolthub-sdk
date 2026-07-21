@@ -94,6 +94,48 @@ describe("handleCreateWorkspace", () => {
     expect(result.content[0].text).toContain("already taken");
     expect(recorded.filter((r) => r.method === "POST")).toHaveLength(0);
   });
+
+  test("wallet_node_id binds the node as the payout wallet in one call", async () => {
+    mockApi({
+      "GET /tenants/check-slug?slug=acme-data": { available: true },
+      "POST /tenants": (body: unknown) => ({
+        tenant: { ...TENANT, name: (body as { name: string }).name, slug: (body as { slug: string }).slug },
+      }),
+      "POST /nodes/node-9/connect-wallet": {
+        connected: true,
+        node: { receivingCapacitySat: 50000, activeChannelCount: 2 },
+      },
+    });
+    const result = await handleCreateWorkspace(
+      { name: "Acme Data", wallet_node_id: "node-9" },
+      API,
+      TOKEN,
+    );
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("node-9");
+    expect(text).toContain("payout wallet");
+    const bind = recorded.find((r) => r.path === "/nodes/node-9/connect-wallet");
+    expect(bind?.body).toEqual({ tenantId: "t-1" });
+  });
+
+  test("suggests binding a ready node when wallet_node_id is omitted", async () => {
+    mockApi({
+      "GET /tenants/check-slug?slug=acme-data": { available: true },
+      "POST /tenants": (body: unknown) => ({ tenant: { ...TENANT, slug: (body as { slug: string }).slug } }),
+      "GET /nodes": {
+        nodes: [
+          { id: "node-7", name: "prod", status: "ready", provider: "lunanode", tenantId: null, hasInvoicesMacaroon: true },
+        ],
+      },
+    });
+    const result = await handleCreateWorkspace({ name: "Acme Data" }, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("node-7");
+    expect(text).toContain("connect_wallet");
+    // no bind fires without an explicit wallet_node_id
+    expect(recorded.find((r) => r.path === "/nodes/node-7/connect-wallet")).toBeUndefined();
+  });
 });
 
 describe("handleConnectWallet", () => {
@@ -267,6 +309,20 @@ describe("handleGetOnboardingState", () => {
     expect(text).toContain("not started (starts at first publish)");
     expect(text).toContain("Next: fix origin protection");
     expect(text).toContain("no-code-platform-recipes");
+  });
+
+  test("paid drafts + no wallet flags the publish gate in the next step", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1": { tenant: { ...TENANT, walletConnected: false } },
+      "GET /tenants/t-1/endpoints": { endpoints: [EP()] }, // paid (5 sats), draft
+      "POST /tenants/t-1/origins/o-1/check": { check: { verdict: "protected", signed: {}, unsigned: {} } },
+    });
+    const result = await handleGetOnboardingState({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("Next: connect_wallet");
+    expect(text).toContain("paid draft");
+    expect(text).toContain("can't be published");
   });
 
   test("no wallet wins the next-step priority", async () => {

@@ -43,9 +43,23 @@ function mockApi(routes: Record<string, unknown | ((body: unknown) => unknown)>)
       return new Response(JSON.stringify({ error: `no mock for ${key}` }), { status: 404 });
     }
     const payload = typeof handler === "function" ? (handler as (b: unknown) => unknown)(body) : handler;
+    // A route can return `{ __status, __body }` to simulate a non-2xx API
+    // response (e.g. the WALLET_REQUIRED gate) — otherwise it's a 200.
+    if (payload && typeof payload === "object" && "__status" in payload) {
+      const p = payload as { __status: number; __body?: unknown };
+      return new Response(JSON.stringify(p.__body ?? {}), { status: p.__status });
+    }
     return new Response(JSON.stringify(payload), { status: 200 });
   }) as typeof fetch;
 }
+
+const WALLET_REQUIRED_400 = {
+  __status: 400,
+  __body: {
+    error: "Connect a Lightning wallet before publishing a paid endpoint.",
+    code: "WALLET_REQUIRED",
+  },
+};
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
@@ -305,6 +319,20 @@ describe("handlePublishListing", () => {
     const result = await handlePublishListing({ endpoint_ids: ["ep-1", "nope"] }, API, TOKEN);
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("nope");
+  });
+
+  test("confirm:true → WALLET_REQUIRED becomes connect/deploy guidance, not a raw error", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [{ ...TENANT, status: "onboarding", directoryListed: false }] },
+      "GET /tenants/t-1/endpoints": { endpoints: DRAFTS },
+      "PATCH /tenants/t-1/endpoints/bulk": WALLET_REQUIRED_400,
+    });
+    const result = await handlePublishListing({ confirm: true }, API, TOKEN);
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("connect_wallet");
+    expect(text).toContain("deploy_node");
+    expect(text).not.toContain("publish_listing failed");
   });
 
   test("fully-live workspace is a clean no-op", async () => {

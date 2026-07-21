@@ -202,7 +202,7 @@ const TOOLS: SourceTool[] = [
   {
     name: "node_status",
     description:
-      "Check the status of a deployed Lightning node. Returns current state, IP address, sync progress, and setup instructions when applicable. Pass wait_for to BLOCK until a milestone is reached (for driving deploy → wallet → bind without babysitting): the call polls server-side state and returns as soon as the condition holds, errors loudly on timeout or a terminal state, and stops immediately when only user action can progress things (wallet creation is a browser step). Never wrap this tool in your own polling loop — use wait_for.",
+      "Check the status of a deployed Lightning node. Returns current state, IP address, sync progress, and setup instructions when applicable. Pass wait_for to BLOCK until a milestone is reached (for driving deploy → wallet → bind without babysitting): the call polls server-side state and returns as soon as the condition holds, errors loudly on timeout or a terminal state, and stops immediately when only user action can progress things (wallet creation is a browser step). One call blocks at most ~150s (desktop MCP clients abort longer calls); with a bigger timeout_s the tool returns WAIT PAUSED with the remaining budget — re-call with that budget to continue. That single re-call is expected; never wrap this tool in your own polling loop.",
     inputSchema: {
       type: "object",
       properties: {
@@ -215,7 +215,7 @@ const TOOLS: SourceTool[] = [
         },
         timeout_s: {
           type: "number",
-          description: "Hard wait ceiling in seconds, 5-600 (default 120). On timeout the tool errors with what to do next; it never silently keeps polling.",
+          description: "Total wait budget in seconds, 5-600 (default 120). A single call blocks at most ~150s to stay under desktop MCP transport kill-timers; a larger budget is spent across re-calls (the WAIT PAUSED result says exactly what to re-call with). On timeout the tool errors with what to do next; it never silently keeps polling.",
         },
       },
       required: ["node_id"],
@@ -367,7 +367,7 @@ const TOOLS: SourceTool[] = [
   {
     name: "create_workspace",
     description:
-      "Create a new bolthub workspace (tenant) for selling APIs. Secret-free and reversible: an empty workspace costs nothing and the 30-day trial only starts when a first endpoint is published. Wallet connection is a separate step (connect_wallet). Requires an account token (connect_account).",
+      "Create a new bolthub workspace (tenant) for selling APIs. Secret-free and reversible: an empty workspace costs nothing and the 30-day trial only starts when a first endpoint is published. A wallet is OPTIONAL until you publish a paid endpoint — then it's required (publishing a paid endpoint without one is blocked). Bind a deployed node as the payout wallet now with wallet_node_id, or later with connect_wallet. Requires an account token (connect_account).",
     inputSchema: {
       type: "object",
       properties: {
@@ -378,6 +378,10 @@ const TOOLS: SourceTool[] = [
         },
         description: { type: "string", description: "Optional workspace description shown in the directory." },
         tags: { type: "array", items: { type: "string" }, description: "Optional directory tags (max 10)." },
+        wallet_node_id: {
+          type: "string",
+          description: "Optionally bind this deployed bolthub node (from deploy_node/node_status) as the payout wallet in the same call. Server-side credential copy; nothing secret enters chat. Omit to stay walletless and connect later.",
+        },
       },
       required: ["name"],
     },

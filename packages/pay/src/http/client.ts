@@ -75,6 +75,8 @@ export class L402Client {
   private onPaid?: L402ClientOptions["onPaid"];
   private store: SessionStore;
   private receiptStore?: ReceiptStore;
+  private receiptWriteFailures = 0;
+  private lastReceiptWriteError?: string;
   // Prepaid-credit credentials by HOST (the settlement group): after buyCredit
   // pays once, its (macaroon:preimage) is presented on every request to any of
   // that provider's endpoints, drawing the prepaid budget with no new payment.
@@ -777,8 +779,21 @@ export class L402Client {
         outcome: resp.headers.get("X-Bolthub-Payment") ?? "unknown",
       });
     } catch (err) {
-      console.error(`bolthub: failed to record payment receipt: ${err instanceof Error ? err.message : err}`);
+      // Never fail the request (the paid call already succeeded), but a
+      // dropped receipt is missing money history — count it so surfaces
+      // like export_receipts can warn instead of looking merely empty.
+      this.receiptWriteFailures++;
+      this.lastReceiptWriteError = err instanceof Error ? err.message : String(err);
+      console.error(`bolthub: failed to record payment receipt: ${this.lastReceiptWriteError}`);
     }
+  }
+
+  /**
+   * Receipt-write health: settled payments whose ledger append threw.
+   * Zero when no store is configured (nothing is ever attempted).
+   */
+  get receiptRecordingFailures(): { count: number; last?: string } {
+    return { count: this.receiptWriteFailures, last: this.lastReceiptWriteError };
   }
 
   /**

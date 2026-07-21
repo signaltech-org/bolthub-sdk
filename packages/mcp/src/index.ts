@@ -147,7 +147,16 @@ async function main() {
   for (const [key, entry] of Object.entries(config.mcpServers)) {
     sources.push(new McpServerSource(key, entry, services));
   }
-  if (services.receiptStore) sources.push(new ReceiptsSource(services.receiptStore));
+  if (services.receiptStore) {
+    sources.push(
+      new ReceiptsSource(services.receiptStore, {
+        ledgerPath: services.receiptsPath,
+        recordingHealth: services.l402Client
+          ? () => services.l402Client!.receiptRecordingFailures
+          : undefined,
+      }),
+    );
+  }
   if (sources.length === 0) {
     console.error("No tool sources configured. Run with --help for the config format.");
     process.exit(1);

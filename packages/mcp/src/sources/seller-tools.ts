@@ -18,12 +18,25 @@ import {
   getGatewayUrl,
   type ImportedEndpoint,
 } from "@bolthub/shared";
-import { apiRequest } from "./node-tools.js";
+import { apiRequest, isWalletRequiredError } from "./node-tools.js";
 import { readStoredToken } from "./connect-tools.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
 const DEFAULT_API_URL = "https://api.bolthub.ai";
+
+/**
+ * The paid-publish gate (WALLET_REQUIRED) can't be fixed from chat with a
+ * secret, so turn it into the two chat-native next steps instead of echoing a
+ * raw failure: bind/connect a wallet, or deploy a node to bind.
+ */
+const WALLET_REQUIRED_GUIDANCE = [
+  "Can't publish a paid endpoint yet — this workspace has no connected wallet, so buyers couldn't be charged.",
+  "Fix it, then re-run publish_listing:",
+  "- connect_wallet — bind a deployed node (node_id) or get the browser link for NWC/LND.",
+  "- deploy_node — no node yet? Spin up your own LND node in ~5 minutes, then bind it.",
+  "Drafts stay safe in the meantime; nothing was published.",
+].join("\n");
 
 // D5 pricing rails. The soft cap bounds what we PROPOSE; a seller can state
 // a higher number themselves (restate-to-exceed) — but never via a value
@@ -383,6 +396,7 @@ export async function handleListApi(
     );
     return textResult(lines.join("\n"));
   } catch (err) {
+    if (isWalletRequiredError(err)) return errorResult(WALLET_REQUIRED_GUIDANCE);
     return errorResult(`list_api failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
@@ -538,6 +552,7 @@ export async function handlePublishListing(
       ].join("\n"),
     );
   } catch (err) {
+    if (isWalletRequiredError(err)) return errorResult(WALLET_REQUIRED_GUIDANCE);
     return errorResult(
       `publish_listing failed: ${err instanceof Error ? err.message : String(err)}`,
     );
