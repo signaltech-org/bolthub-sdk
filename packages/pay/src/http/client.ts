@@ -22,6 +22,38 @@ interface SessionInfo {
   balance?: number;
 }
 
+/**
+ * Compose the per-attempt abort signal from the caller's optional signal
+ * and the client timeout. Hand-rolled instead of `AbortSignal.any` +
+ * `AbortSignal.timeout` for two reasons: older-but-supported browsers lack
+ * `any()`, and streaming needs to DISARM the timeout once response headers
+ * arrive while keeping the caller's signal wired to the body read (that
+ * signal is how a consumer stops a live stream). The timeout aborts with
+ * the same `TimeoutError` DOMException reason `AbortSignal.timeout` uses,
+ * so downstream `err.name === "TimeoutError"` handling is unchanged.
+ */
+function makeAttemptSignal(
+  external: AbortSignal | null | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; disarmTimeout: () => void } {
+  const ctrl = new AbortController();
+  if (external) {
+    if (external.aborted) {
+      ctrl.abort(external.reason);
+    } else {
+      external.addEventListener("abort", () => ctrl.abort(external.reason), {
+        once: true,
+      });
+    }
+  }
+  const timer = setTimeout(() => {
+    ctrl.abort(new DOMException("The operation timed out.", "TimeoutError"));
+  }, timeoutMs);
+  // Node/Bun: a pending attempt timeout must not hold the process open.
+  (timer as unknown as { unref?: () => void }).unref?.();
+  return { signal: ctrl.signal, disarmTimeout: () => clearTimeout(timer) };
+}
+
 class InMemorySessionStore implements SessionStore {
   private map = new Map<string, SessionData>();
   get(key: string): SessionData | undefined { return this.map.get(key); }
@@ -393,15 +425,47 @@ export class L402Client {
   }
 
   /**
+   * One fetch attempt with a FRESH composed signal (caller signal +
+   * timeout — retry wrappers call this once per attempt, so each retry
+   * gets its own timeout window, matching the old `AbortSignal.timeout`
+   * per-thunk behavior). In streaming mode the timeout is disarmed the
+   * moment headers arrive: from then on only the caller's signal can
+   * abort the (possibly never-ending) body. In buffered mode the timeout
+   * stays armed so the full round-trip including the body read is
+   * bounded, exactly as before.
+   */
+  private async attemptFetch(
+    url: string,
+    init: RequestInit,
+    external: AbortSignal | null | undefined,
+    streaming: boolean | undefined,
+  ): Promise<Response> {
+    const { signal, disarmTimeout } = makeAttemptSignal(external, this.timeoutMs);
+    try {
+      const resp = await fetch(url, { ...init, signal });
+      if (streaming) disarmTimeout();
+      return resp;
+    } catch (err) {
+      disarmTimeout();
+      throw err;
+    }
+  }
+
+  /**
    * Send an HTTP request, automatically handling L402 challenges.
    *
    * If the server responds with 402 the client will parse the challenge,
    * pay the invoice, and retry with the L402 proof. Throws
    * {@link L402BudgetError} if the invoice exceeds configured limits and
    * {@link L402PaymentError} if the wallet fails to pay.
+   *
+   * A caller-supplied `signal` is honored on every leg (composed with the
+   * client timeout). With `streaming: true`, `timeoutMs` bounds only the
+   * time to response headers on each leg — never the body read — so an
+   * endless SSE body can be consumed and stopped via `signal`.
    */
   async request(url: string, options: L402RequestOptions = {}): Promise<Response> {
-    const { params, maxCostSats, onPaid, ...fetchOptions } = options;
+    const { params, maxCostSats, onPaid, streaming, signal, ...fetchOptions } = options;
 
     let finalUrl = url;
     if (params) {
@@ -422,7 +486,7 @@ export class L402Client {
       headers.set("Authorization", `L402 ${credit.macaroon}:${credit.preimage}`);
       try {
         const resp = await this.fetchRetryingUpstream(
-          () => fetch(finalUrl, { ...fetchOptions, headers, signal: AbortSignal.timeout(this.timeoutMs) }),
+          () => this.attemptFetch(finalUrl, { ...fetchOptions, headers }, signal, streaming),
           fetchOptions.body,
           finalUrl,
         );
@@ -446,12 +510,7 @@ export class L402Client {
 
       try {
         const resp = await this.fetchRetryingUpstream(
-          () =>
-            fetch(finalUrl, {
-              ...fetchOptions,
-              headers,
-              signal: AbortSignal.timeout(this.timeoutMs),
-            }),
+          () => this.attemptFetch(finalUrl, { ...fetchOptions, headers }, signal, streaming),
           fetchOptions.body,
           finalUrl,
         );
@@ -474,11 +533,7 @@ export class L402Client {
     let resp: Response;
     try {
       resp = await this.fetchRetrying429(
-        () =>
-          fetch(finalUrl, {
-            ...fetchOptions,
-            signal: AbortSignal.timeout(this.timeoutMs),
-          }),
+        () => this.attemptFetch(finalUrl, fetchOptions, signal, streaming),
         fetchOptions.body,
       );
     } catch (err) {
@@ -555,12 +610,7 @@ export class L402Client {
       // retry re-uses the payment already made above. The same holds for
       // origin failures the gateway reports as upstream_failed_retryable.
       const authedResp = await this.fetchRetryingUpstream(
-        () =>
-          fetch(finalUrl, {
-            ...fetchOptions,
-            headers,
-            signal: AbortSignal.timeout(this.timeoutMs),
-          }),
+        () => this.attemptFetch(finalUrl, { ...fetchOptions, headers }, signal, streaming),
         fetchOptions.body,
         finalUrl,
       );

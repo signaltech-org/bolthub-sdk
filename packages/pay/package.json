@@ -1,6 +1,6 @@
 {
   "name": "@bolthub/pay",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "The bolthub payments SDK: charge for an MCP tool or HTTP endpoint — and pay for them — in a few lines. Lightning-only (L402) micropayments for AI-agent tool calls",
   "main": "dist/index.js",
   "module": "dist/index.mjs",

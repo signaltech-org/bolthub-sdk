@@ -4,6 +4,21 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-23
+
+### Added
+
+- **Streaming (SSE) support in `L402Client.request`.** New per-request
+  `streaming: true` option: `timeoutMs` then bounds only the time to response
+  headers on each leg of the flow (challenge, session/credit reuse, and the
+  paid retry) — the body read is never timed out, so an endless
+  `text/event-stream` body can be consumed live. Buffered behavior without the
+  flag is unchanged.
+- **`signal` is honored.** A standard `RequestInit.signal` passed to
+  `request()` is now composed with the client timeout instead of being
+  silently overwritten; aborting it cancels the in-flight body read, which is
+  how a consumer stops a live stream.
+
 ## [0.7.0] - 2026-07-10
 
 ### Added

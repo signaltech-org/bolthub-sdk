@@ -178,4 +178,24 @@ export interface L402RequestOptions extends RequestInit {
    * client-level callback ({@link PaidInfo}).
    */
   onPaid?: (info: PaidInfo) => void;
+
+  /**
+   * Declare the expected response a live stream (SSE / chunked). The
+   * client's `timeoutMs` then bounds only the time to RESPONSE HEADERS on
+   * each leg of the flow; once headers arrive the body is never timed out,
+   * so an endless `text/event-stream` body can be consumed indefinitely.
+   * Without this, `timeoutMs` bounds the whole round-trip including the
+   * body read (the default, correct for buffered JSON responses). Combine
+   * with `signal` to let the caller stop the stream.
+   */
+  streaming?: boolean;
+
+  /**
+   * Standard `RequestInit.signal`, honored by composition: the request
+   * aborts when EITHER the caller's signal aborts or the client's
+   * `timeoutMs` elapses (subject to `streaming` above). Aborting after
+   * headers arrive cancels the in-flight body read, which is how a
+   * consumer stops a live stream.
+   */
+  signal?: AbortSignal | null;
 }

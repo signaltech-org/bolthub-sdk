@@ -154,18 +154,36 @@ for the browser build. `walletFromEnv()` builds one from the standard env vars
 `PHOENIXD_URL`/`PHOENIXD_PASSWORD`, `NWC_URI`). `attenuate()` narrows an L402
 macaroon offline to delegate a restricted credential to a sub-agent.
 
-### Prepaid bundles, receipts, and free retries
+### Streaming endpoints (SSE)
+
+For a paid endpoint that answers with a live `text/event-stream` body, pass
+`streaming: true` (0.8.0+): `timeoutMs` then bounds only the time to response
+headers on each leg of the L402 flow, never the body read, so the stream can
+run indefinitely. Stop it by aborting a `signal` you pass in:
+
+```ts
+const ctrl = new AbortController();
+const resp = await client.get("https://acme.gw.bolthub.ai/v1/live-feed", {
+  streaming: true,
+  signal: ctrl.signal,
+});
+const reader = resp.body!.getReader();
+// read events as they arrive; ctrl.abort() closes the stream cleanly
+```
+
+### Prepaid credit, receipts, and free retries
 
 `L402Client` adds three agent-native behaviors on top of pay-and-retry:
 
-- **Prepaid bundles.** On a `per_request` endpoint that offers them,
-  `buyBundle(url, n)` pays once for an N-use credential; ordinary calls to that
-  URL then spend it down with no further payment until it runs out. You pass the
-  size, not the price, so a client can't underpay, and a bundle is scoped to the
-  one endpoint you bought it for.
+- **Prepaid credit.** `buyCredit(url, sats)` pays once for a face-value sats
+  budget spendable across ALL of that provider's `per_request` endpoints;
+  subsequent calls to the provider draw the budget with no further payment
+  until it is spent. `batchFetch(urls, { creditSats })` groups URLs by
+  provider and buys one credit per provider. (Replaces the per-endpoint
+  bundles retired in 0.6.0 — `buyBundle` now throws.)
 
   ```ts
-  await client.buyBundle("https://acme.gw.bolthub.ai/v1/data", 100);
+  await client.buyCredit("https://acme.gw.bolthub.ai/v1/data", 500);
   for (let i = 0; i < 100; i++) await client.get("https://acme.gw.bolthub.ai/v1/data");
   ```
 
