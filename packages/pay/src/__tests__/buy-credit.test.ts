@@ -157,6 +157,19 @@ describe("buyCredit", () => {
     expect(w.payInvoice).not.toHaveBeenCalled();
   });
 
+  // 2026-07-24 smoke finding F5: with a per-request cap below the remaining
+  // budget, the per-request limit is the guard that fires on buyCredit (the
+  // budget guard is shadowed). That branch had coverage only on request().
+  test("per-request cap refuses an over-cap credit purchase before the wallet is touched", async () => {
+    const w = wallet();
+    const client = new L402Client({ wallet: w, budgetSats: 50_000, maxPerRequestSats: 500 });
+    scriptFetch([creditChallenge(1000), new Response("{}", { status: 200 })]);
+    await expect(
+      client.buyCredit("https://acme.gw.bolthub.ai/v1/data", 1000),
+    ).rejects.toThrow(/per-request limit/);
+    expect(w.payInvoice).not.toHaveBeenCalled();
+  });
+
   test("clearCredits drops the cached credential (next call pays again)", async () => {
     const w = wallet("beefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef");
     const client = new L402Client({ wallet: w });

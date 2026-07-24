@@ -298,7 +298,7 @@ export async function handleListApi(
     if (existing && (existing.endpoints?.length ?? 0) > 0) {
       const syncRows = withOrigin.map(({ originUrl: _o, directoryListed: _d, ...spec }) => spec);
       if (!args.apply_sync) {
-        const { diff } = await apiRequest<{ diff: unknown }>(
+        const { diff } = await apiRequest<{ diff: { removed?: unknown[] } }>(
           baseUrl,
           `/tenants/${tenant.id}/endpoints/sync`,
           {
@@ -307,33 +307,71 @@ export async function handleListApi(
             token: authToken,
           },
         );
-        return textResult(
-          [
-            `Origin ${originUrlNorm} already has a listing — this is a re-import, so nothing was changed.`,
-            "Dry-run diff (spec-owned fields only; pricing and gateway settings are never touched by sync):",
-            JSON.stringify(diff, null, 2),
+        const removalCount = diff.removed?.length ?? 0;
+        const lines = [
+          `Origin ${originUrlNorm} already has a listing — this is a re-import, so nothing was changed.`,
+          "Dry-run diff (spec-owned fields only; pricing and gateway settings are never touched by sync):",
+          JSON.stringify(diff, null, 2),
+          "",
+        ];
+        if (removalCount > 0) {
+          lines.push(
+            `NOTE: apply_sync never deletes endpoints — the ${removalCount} removal(s) above stay listed until you confirm them in the dashboard sync screen (buyers may depend on them).`,
             "",
-            "To apply this diff, re-run list_api with apply_sync: true, or review it in the dashboard sync screen.",
-          ].join("\n"),
+          );
+        }
+        lines.push(
+          "To apply this diff, re-run list_api with apply_sync: true, or review it in the dashboard sync screen.",
+        );
+        return textResult(lines.join("\n"));
+      }
+      const { result } = await apiRequest<{
+        result: {
+          added: number;
+          updated: number;
+          removed: number;
+          removalsSkipped?: number;
+          addedEndpointIds?: string[];
+        };
+      }>(baseUrl, `/tenants/${tenant.id}/endpoints/sync`, {
+        method: "POST",
+        body: { originId: existing.id, endpoints: syncRows },
+        token: authToken,
+      });
+
+      // Sync-added endpoints arrive as unpriced drafts; give them the same
+      // default pricing as a first import so a later publish can't put an
+      // unpriced (= free) endpoint in the directory.
+      const addedIds = result.addedEndpointIds ?? [];
+      if (addedIds.length > 0) {
+        await apiRequest(baseUrl, `/tenants/${tenant.id}/endpoints/bulk-pricing`, {
+          method: "PUT",
+          body: {
+            endpointIds: addedIds,
+            pricing: { pricingModel: "per_request", priceSats },
+          },
+          token: authToken,
+        });
+      }
+
+      const lines = [
+        `Sync applied to ${originUrlNorm}: ${result.added} added, ${result.updated} updated, ${result.removed ?? 0} removed.`,
+      ];
+      if (result.added > 0) {
+        lines.push(
+          addedIds.length > 0
+            ? `Added endpoint(s) were created as UNLISTED drafts at ${priceSats} sats/request — nothing is public until you run publish_listing.`
+            : "Added endpoint(s) were created as UNLISTED drafts — set pricing (dashboard → Endpoints), then run publish_listing.",
         );
       }
-      const { result } = await apiRequest<{ result: unknown }>(
-        baseUrl,
-        `/tenants/${tenant.id}/endpoints/sync`,
-        {
-          method: "POST",
-          body: { originId: existing.id, endpoints: syncRows },
-          token: authToken,
-        },
-      );
-      return textResult(
-        [
-          `Sync applied to ${originUrlNorm}:`,
-          JSON.stringify(result, null, 2),
-          "",
-          "Pricing was not changed (sync never touches it).",
-        ].join("\n"),
-      );
+      const skipped = result.removalsSkipped ?? 0;
+      if (skipped > 0) {
+        lines.push(
+          `${skipped} spec-removed endpoint(s) were NOT deleted — sync never deletes. If you meant to retire them, confirm the removal in the dashboard sync screen; until then they stay listed and buyable.`,
+        );
+      }
+      lines.push("", "Pricing on existing endpoints was not changed (sync never touches it).");
+      return textResult(lines.join("\n"));
     }
 
     // First import: create every row as an UNLISTED draft, then apply the
@@ -449,9 +487,21 @@ export async function handlePublishListing(
     const unpriced = targets.filter((e) => !e.pricingRules?.length);
     const inactive = targets.filter((e) => !e.isActive);
 
+    // Mirror of the API's paid-publish gate (wallet-gate.service): a
+    // walletless workspace can't list a priced endpoint. The dry run must
+    // render this as BLOCKED, not as a would-publish plan the confirm path
+    // then refuses (2026-07-24 smoke finding F2) — the dry run's contract is
+    // "confirm publishes exactly what the dry run showed".
+    const walletBlocked =
+      tenant.walletConnected === false && targets.some((e) => e.pricingRules?.length);
+
     const summary: string[] = [`Publishing plan for workspace "${tenant.name}":`, ""];
     if (targets.length > 0) {
-      summary.push(`${targets.length} endpoint(s) become visible in the directory:`);
+      summary.push(
+        walletBlocked
+          ? `${targets.length} endpoint(s) would go in the directory, but publishing is BLOCKED (no payout wallet — see below):`
+          : `${targets.length} endpoint(s) become visible in the directory:`,
+      );
       summary.push(
         ...targets.map((e) => `  ${e.method} ${e.path}${e.title ? ` — ${e.title}` : ""} · ${priceLabel(e)}`),
       );
@@ -465,7 +515,9 @@ export async function handlePublishListing(
     if (tenant.trialEndsAt == null) {
       summary.push("", "Note: publishing the first endpoint starts the workspace's 30-day free trial.");
     }
-    if (tenant.walletConnected === false) {
+    if (walletBlocked) {
+      summary.push("", WALLET_REQUIRED_GUIDANCE);
+    } else if (tenant.walletConnected === false) {
       summary.push(
         "",
         "WARNING: no payout wallet is connected — the listing would be public but every buyer payment fails at invoice creation. Run connect_wallet first.",
@@ -501,9 +553,19 @@ export async function handlePublishListing(
     }
 
     if (args.confirm !== true) {
-      summary.push("", "DRY RUN — nothing was changed. Re-run with confirm: true to publish exactly the above.");
+      summary.push(
+        "",
+        walletBlocked
+          ? "DRY RUN — nothing was changed, and confirm: true would be refused for the same reason. Connect a wallet first."
+          : "DRY RUN — nothing was changed. Re-run with confirm: true to publish exactly the above.",
+      );
       return textResult(summary.join("\n"));
     }
+
+    // Same verdict as the dry run, before any write. The API gate stays the
+    // authoritative backstop (the catch below) in case wallet state changed
+    // between the tenant read and now.
+    if (walletBlocked) return errorResult(WALLET_REQUIRED_GUIDANCE);
 
     const changed: string[] = [];
     if (targets.length > 0) {

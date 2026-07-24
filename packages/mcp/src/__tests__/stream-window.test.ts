@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  activePassExpiry,
   clampStreamCaps,
   formatStreamWindow,
   isEventStreamResponse,
@@ -157,5 +158,42 @@ describe("formatStreamWindow", () => {
       "",
     );
     expect(out).toContain("the paid window ended");
+  });
+
+  // 2026-07-24 smoke finding F10: the close line claimed "a new payment on
+  // paid endpoints" even when the next window was free under an active pass.
+  test("close line says the next window is free under an active pass", () => {
+    const out = formatStreamWindow(
+      {
+        events: [{ event: null, data: "x", id: null, comment: false }],
+        reason: "cap_events",
+        keepalives: 0,
+        durationMs: 1000,
+      },
+      caps,
+      " · 0 sats (covered by active pass)",
+      new Date("2026-07-25T00:00:00Z"),
+    );
+    expect(out).toContain("free under your active pass until 2026-07-25T00:00:00.000Z");
+    expect(out).not.toContain("a new payment on paid endpoints");
+  });
+});
+
+describe("activePassExpiry", () => {
+  test("active session on the exact URL wins; expired/missing/undefined do not", () => {
+    const future = Date.now() + 60_000;
+    const client = {
+      getSessions: () => new Map([["api.gw/v1/stream", { expiresAt: future }]]),
+    };
+    expect(activePassExpiry(client, "https://api.gw/v1/stream")?.getTime()).toBe(future);
+    expect(activePassExpiry(client, "https://api.gw/v1/other")).toBeUndefined();
+
+    const expired = {
+      getSessions: () => new Map([["api.gw/v1/stream", { expiresAt: Date.now() - 1 }]]),
+    };
+    expect(activePassExpiry(expired, "https://api.gw/v1/stream")).toBeUndefined();
+    expect(activePassExpiry(undefined, "https://api.gw/v1/stream")).toBeUndefined();
+    // Legacy fakes without getSessions must not throw.
+    expect(activePassExpiry({} as { getSessions?: () => Map<string, { expiresAt: number }> }, "https://api.gw/v1/stream")).toBeUndefined();
   });
 });

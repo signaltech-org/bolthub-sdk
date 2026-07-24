@@ -249,6 +249,63 @@ describe("handleListApi", () => {
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain("Sync applied");
   });
+
+  // 2026-07-24 smoke findings F7/F8: sync-added endpoints were born
+  // published + unpriced (free in the directory) and advertised removals
+  // silently never happened. The tool now prices the added drafts like a
+  // first import and discloses both the draft state and skipped removals.
+  test("apply_sync prices sync-added drafts and discloses skipped removals", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/origins": {
+        origins: [
+          { id: "o-1", baseUrl: "https://origin.example.com", endpoints: [{ id: "ep-0" }] },
+        ],
+      },
+      "POST /tenants/t-1/endpoints/sync": {
+        result: {
+          added: 1,
+          updated: 1,
+          removed: 0,
+          removalsSkipped: 1,
+          addedEndpointIds: ["ep-new"],
+        },
+      },
+      "PUT /tenants/t-1/endpoints/bulk-pricing": (body: unknown) => {
+        expect(body).toEqual({
+          endpointIds: ["ep-new"],
+          pricing: { pricingModel: "per_request", priceSats: 5 },
+        });
+        return { updated: 1 };
+      },
+    });
+    const result = await handleListApi({ spec_content: OPENAPI, apply_sync: true }, API, TOKEN);
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("1 added, 1 updated, 0 removed");
+    expect(text).toContain("UNLISTED drafts at 5 sats/request");
+    expect(text).toContain("publish_listing");
+    expect(text).toContain("NOT deleted");
+    expect(recorded.some((r) => r.path.endsWith("/endpoints/bulk-pricing"))).toBe(true);
+  });
+
+  test("dry-run diff with removals warns that apply_sync never deletes", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1/origins": {
+        origins: [
+          { id: "o-1", baseUrl: "https://origin.example.com", endpoints: [{ id: "ep-0" }] },
+        ],
+      },
+      "POST /tenants/t-1/endpoints/sync": {
+        diff: { added: [], changed: [], unchanged: [], removed: [{ key: "GET /uuid", endpointId: "ep-9" }] },
+      },
+    });
+    const result = await handleListApi({ spec_content: OPENAPI }, API, TOKEN);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("apply_sync never deletes endpoints");
+    expect(result.content[0].text).toContain("dashboard sync screen");
+  });
 });
 
 describe("handlePublishListing", () => {
@@ -333,6 +390,51 @@ describe("handlePublishListing", () => {
     expect(text).toContain("connect_wallet");
     expect(text).toContain("deploy_node");
     expect(text).not.toContain("publish_listing failed");
+  });
+
+  // 2026-07-24 smoke finding F2: the dry run showed a would-publish plan
+  // with only a WARNING while confirm hard-blocked on the API's wallet
+  // gate. Both paths now mirror the gate (walletless + priced target =
+  // BLOCKED) so the dry run never promises a plan confirm refuses.
+  test("walletless dry run renders BLOCKED, not a would-publish promise", async () => {
+    mockApi({
+      "GET /tenants": {
+        tenants: [{ ...TENANT, status: "onboarding", directoryListed: false, walletConnected: false }],
+      },
+      "GET /tenants/t-1/endpoints": { endpoints: DRAFTS },
+    });
+    const result = await handlePublishListing({}, API, TOKEN);
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("BLOCKED");
+    expect(text).toContain("connect_wallet");
+    expect(text).toContain("deploy_node");
+    expect(text).not.toContain("Re-run with confirm: true");
+    expect(recorded.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  test("walletless confirm refuses before any write, same verdict as the dry run", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [{ ...TENANT, walletConnected: false }] },
+      "GET /tenants/t-1/endpoints": { endpoints: DRAFTS },
+    });
+    const result = await handlePublishListing({ confirm: true }, API, TOKEN);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("connect_wallet");
+    expect(recorded.every((r) => r.method === "GET")).toBe(true);
+  });
+
+  test("walletless publish of free-only endpoints is warned, not blocked (mirrors the API gate)", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [{ ...TENANT, walletConnected: false }] },
+      "GET /tenants/t-1/endpoints": { endpoints: [DRAFTS[1]] },
+      "PATCH /tenants/t-1/endpoints/bulk": { endpoints: [] },
+    });
+    const result = await handlePublishListing({ confirm: true }, API, TOKEN);
+    expect(result.isError).toBeUndefined();
+    expect(
+      recorded.some((r) => r.method === "PATCH" && r.path.endsWith("/endpoints/bulk")),
+    ).toBe(true);
   });
 
   test("fully-live workspace is a clean no-op", async () => {

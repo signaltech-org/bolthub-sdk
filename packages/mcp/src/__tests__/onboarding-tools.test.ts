@@ -78,6 +78,9 @@ describe("handleCreateWorkspace", () => {
     expect(result.isError).toBeUndefined();
     const text = result.content[0].text;
     expect(text).toContain("acme-data-2");
+    // 2026-07-24 smoke finding F4: the tenant UUID must be in the output —
+    // every subsequent seller tool needs it on multi-workspace accounts.
+    expect(text).toContain("tenant_id: t-1");
     expect(text).toContain("trial only starts");
     expect(text).toContain("connect_wallet");
     // the create response carries gateway/HMAC secrets — they must never leak
@@ -308,7 +311,55 @@ describe("handleGetOnboardingState", () => {
     expect(text).toContain("[!] Origin protection: public");
     expect(text).toContain("not started (starts at first publish)");
     expect(text).toContain("Next: fix origin protection");
-    expect(text).toContain("no-code-platform-recipes");
+  });
+
+  // 2026-07-24 smoke finding F9: "inconclusive" rendered as a checked
+  // item because it merely wasn't bad. Only "protected" earns [x].
+  test("inconclusive origin verdict is an unchecked box, not [x]", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1": { tenant: { ...TENANT, walletConnected: true } },
+      "GET /tenants/t-1/endpoints": { endpoints: [EP()] },
+      "POST /tenants/t-1/origins/o-1/check": {
+        check: { verdict: "inconclusive", signed: {}, unsigned: {} },
+      },
+    });
+    const result = await handleGetOnboardingState({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("[ ] Origin protection: inconclusive");
+    expect(text).not.toContain("[x] Origin protection");
+  });
+
+  test("unhealthy origin verdict is flagged [!]", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1": { tenant: { ...TENANT, walletConnected: true } },
+      "GET /tenants/t-1/endpoints": { endpoints: [EP()] },
+      "POST /tenants/t-1/origins/o-1/check": {
+        check: { verdict: "unhealthy", signed: {}, unsigned: {} },
+      },
+    });
+    const result = await handleGetOnboardingState({}, API, TOKEN);
+    expect(result.content[0].text).toContain("[!] Origin protection: unhealthy");
+  });
+
+  test("published endpoints with a not-live listing get an explicit [!] line", async () => {
+    mockApi({
+      "GET /tenants": { tenants: [TENANT] },
+      "GET /tenants/t-1": {
+        tenant: { ...TENANT, walletConnected: true, status: "onboarding", directoryListed: false },
+      },
+      "GET /tenants/t-1/endpoints": {
+        endpoints: [EP({ directoryListed: true })],
+      },
+      "POST /tenants/t-1/origins/o-1/check": {
+        check: { verdict: "protected", signed: {}, unsigned: {} },
+      },
+    });
+    const result = await handleGetOnboardingState({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("0 draft, 1 published");
+    expect(text).toContain("[!] 1 published endpoint(s) while the listing is NOT live");
   });
 
   test("paid drafts + no wallet flags the publish gate in the next step", async () => {

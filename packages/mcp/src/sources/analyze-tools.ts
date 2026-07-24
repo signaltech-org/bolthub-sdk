@@ -67,7 +67,9 @@ interface LogsSummary {
 }
 
 interface OriginCheck {
-  verdict: "protected" | "public" | "broken" | "unreachable" | "inconclusive";
+  verdict: "protected" | "public" | "broken" | "unreachable" | "unhealthy" | "inconclusive";
+  /** The URL the probe actually hit — a real endpoint path when one exists. */
+  checkedUrl?: string;
   signed: { statusCode?: number };
   unsigned: { statusCode?: number };
 }
@@ -136,11 +138,12 @@ export async function handleAnalyzeListing(
         `/tenants/${tenant.id}/origins/${originId}/check`,
         { method: "POST", token: authToken },
       );
+      const probedUrl = check.checkedUrl ?? baseUrlOfOrigin;
       switch (check.verdict) {
         case "public":
           findings.push({
             severity: "HIGH",
-            text: `[origin] ${baseUrlOfOrigin} answers unsigned traffic (HTTP ${check.unsigned.statusCode}) — anyone can bypass the paywall and call it free ("a free API with extra steps"). Fix: enforce the gateway signature check on your origin (dashboard → Origins → Protection guide), or use a no-code platform rule / the bolthub-shield proxy: https://docs.bolthub.ai/docs/guides/origin-protection#no-code-platform-recipes`,
+            text: `[origin] ${baseUrlOfOrigin} answers unsigned traffic (HTTP ${check.unsigned.statusCode} at ${probedUrl}) — anyone can bypass the paywall and call it free ("a free API with extra steps"). Fix: enforce the gateway signature check on your origin (dashboard → Origins → Protection guide), or use a no-code platform rule / the bolthub-shield proxy: https://docs.bolthub.ai/docs/guides/origin-protection#no-code-platform-recipes`,
           });
           break;
         case "broken":
@@ -155,10 +158,16 @@ export async function handleAnalyzeListing(
             text: `[origin] ${baseUrlOfOrigin} did not answer either probe — the listing is effectively down. Fix: check the origin's availability and DNS.`,
           });
           break;
+        case "unhealthy":
+          findings.push({
+            severity: "MED",
+            text: `[origin] ${baseUrlOfOrigin} is erroring: probes got HTTP 5xx at ${probedUrl} even after a retry (signed ${check.signed.statusCode ?? "no response"}, unsigned ${check.unsigned.statusCode ?? "no response"}). Buyers may be hitting the same errors, and protection can't be assessed until the origin answers. Fix: check the origin's health, then re-run analyze_listing.`,
+          });
+          break;
         case "inconclusive":
           findings.push({
             severity: "LOW",
-            text: `[origin] ${baseUrlOfOrigin}: protection could not be confirmed (unsigned probe got HTTP ${check.unsigned.statusCode ?? "no response"} at the base URL — not an explicit 401/403). If the base path just 404s, this may be fine; verify with a real endpoint path.`,
+            text: `[origin] ${baseUrlOfOrigin}: protection could not be confirmed (unsigned probe got HTTP ${check.unsigned.statusCode ?? "no response"} at ${probedUrl} — not an explicit 401/403 and not an open 2xx). Re-run once the origin answers normally.`,
           });
           break;
         // "protected" is the good case — no finding.

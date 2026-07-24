@@ -120,6 +120,10 @@ export async function handleCreateWorkspace(
 
     const head = [
       `Workspace "${tenant.name}" created (slug: ${tenant.slug}).`,
+      // Every subsequent seller tool takes tenant_id on multi-workspace
+      // accounts; omitting it here forced an immediate usage_summary
+      // round-trip just to recover it (2026-07-24 smoke finding F4).
+      `tenant_id: ${tenant.id} — pass this to the other seller tools on multi-workspace accounts.`,
       `Gateway domain reserved: ${getGatewayUrl(tenant.slug, "/")}`,
       "",
       "It's free while empty — the 30-day trial only starts when you publish a first endpoint.",
@@ -438,6 +442,7 @@ export async function handleGetOnboardingState(
     const originIds = [...new Set(endpoints.map((e) => e.originId).filter((id): id is string => !!id))];
     let protection = "no origins yet";
     let protectionBad = false;
+    let protectionOk = false;
     if (originIds.length > 0) {
       const verdicts: string[] = [];
       for (const originId of originIds.slice(0, STATE_ORIGIN_CHECK_CAP)) {
@@ -448,10 +453,15 @@ export async function handleGetOnboardingState(
         );
         verdicts.push(check.verdict);
       }
-      const worstOrder = ["broken", "public", "unreachable", "inconclusive", "protected"];
+      const worstOrder = ["broken", "public", "unreachable", "unhealthy", "inconclusive", "protected"];
       const worst = verdicts.sort((a, b) => worstOrder.indexOf(a) - worstOrder.indexOf(b))[0];
       protection = originIds.length > STATE_ORIGIN_CHECK_CAP ? `${worst} (first ${STATE_ORIGIN_CHECK_CAP} origins probed)` : worst;
-      protectionBad = worst === "public" || worst === "broken" || worst === "unreachable";
+      protectionBad = worst === "public" || worst === "broken" || worst === "unreachable" || worst === "unhealthy";
+      // Only an explicit "protected" earns the checked box. "inconclusive"
+      // used to render [x] because it merely wasn't bad — a verdict that
+      // says "couldn't tell" is not a completed checklist item (2026-07-24
+      // smoke finding F9).
+      protectionOk = worst === "protected";
     }
 
     const mark = (ok: boolean, warn = false) => (ok ? "[x]" : warn ? "[!]" : "[ ]");
@@ -465,11 +475,21 @@ export async function handleGetOnboardingState(
           ? `${mark(false, true)} Wallet connected (bolthub node) but NOT PAYABLE — ${boundNode!.activeChannelCount === 0 ? "the node has no channels" : "no inbound capacity"}, so buyers can't pay`
           : `${mark(!!tenant.walletConnected)} Wallet connected${tenant.walletReachable === true ? " (reachability checks passing)" : ""}${boundNode?.receivingCapacitySat ? ` (~${boundNode.receivingCapacitySat} sats inbound capacity)` : ""}`,
       `${mark(endpoints.length > 0)} Endpoints: ${drafts.length} draft, ${published.length} published${unpriced.length > 0 ? ` (${unpriced.length} UNPRICED)` : ""}`,
-      `${mark(!protectionBad && originIds.length > 0, protectionBad)} Origin protection: ${protection}`,
+      `${mark(protectionOk, protectionBad)} Origin protection: ${protection}`,
       `${mark(live)} Listing live in the directory`,
+    ];
+    if (published.length > 0 && !live) {
+      // Reachable via the dashboard's per-endpoint toggle before the
+      // workspace itself is activated/listed; also the tell for a
+      // published-without-publish bug (2026-07-24 smoke finding F7).
+      lines.push(
+        `${mark(false, true)} ${published.length} published endpoint(s) while the listing is NOT live — they are invisible to buyers until the workspace is activated and listed (run publish_listing).`,
+      );
+    }
+    lines.push(
       "",
       `Trial: ${tenant.trialEndsAt ? `ends ${String(tenant.trialEndsAt).slice(0, 10)}` : "not started (starts at first publish)"}`,
-    ];
+    );
 
     let next: string;
     if (tenant.walletConnected && tenant.walletReachable === false)

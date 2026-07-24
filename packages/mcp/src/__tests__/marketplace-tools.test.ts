@@ -1,6 +1,7 @@
 import { describe, test, expect, mock, afterEach } from "bun:test";
 import { handleSearchApis, handleGetApiDetails, handlePreviewCost, handleCallApi, handleBuyCredit, handleMintScopedToken, handleRevokeToken } from "../sources/marketplace-tools";
 import type { ApiClient, DirectoryEntry } from "../sources/api-client";
+import { attenuate } from "@bolthub/pay";
 import type { L402Client } from "@bolthub/pay";
 
 function makeEntry(overrides: Partial<DirectoryEntry> = {}): DirectoryEntry {
@@ -587,6 +588,56 @@ describe("handleMintScopedToken", () => {
     expect(result.content[0].text).toContain("exceeds your remaining budget");
     expect(result.content[0].text).toContain("no token was minted");
     expect(result.content[0].text).not.toContain("L402 "); // no credential leaked
+  });
+
+  // 2026-07-24 smoke finding F5: on a max_sats-bounded credential the
+  // tighten-only parent-cap check always fired first in the live test
+  // (parent cap ≪ budget), so the session-budget interlock had no
+  // coverage. These two pin each branch of the ordering directly.
+  test("budget interlock fires when the parent cap does not shadow it", async () => {
+    // Parent cap 10 000 ≫ requested 500: attenuate tightens fine, and the
+    // refusal must come from the budget interlock.
+    const bounded = attenuate(GATEWAY_MACAROON, { maxSats: 10_000 });
+    let reserveCalls = 0;
+    const l402Client = makeL402Client({
+      getCreditCredential: mock(() => ({ macaroon: bounded, preimage: "beef" })),
+      reserveDelegatedCap: mock(() => {
+        reserveCalls++;
+        throw new Error("Delegated cap 500 sats exceeds remaining budget 100");
+      }),
+      remainingBudget: 100,
+    } as any);
+
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", spend_cap_sats: 500 },
+      makeApiClient(),
+      l402Client,
+    );
+    expect(result.isError).toBe(true);
+    expect(reserveCalls).toBe(1);
+    expect(result.content[0].text).toContain("exceeds your remaining budget");
+    expect(result.content[0].text).toContain("no token was minted");
+  });
+
+  test("when parent cap AND budget are both violated, tighten-only refuses before any reservation", async () => {
+    const bounded = attenuate(GATEWAY_MACAROON, { maxSats: 100 });
+    let reserveCalls = 0;
+    const l402Client = makeL402Client({
+      getCreditCredential: mock(() => ({ macaroon: bounded, preimage: "beef" })),
+      reserveDelegatedCap: mock(() => { reserveCalls++; }),
+      remainingBudget: 1000,
+    } as any);
+
+    const result = await handleMintScopedToken(
+      { slug: "test-api", path: "/v1/data", spend_cap_sats: 60_000 },
+      makeApiClient(),
+      l402Client,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("existing max_sats");
+    // Refusal happens before reserving — nothing was held that would need
+    // releasing on this path.
+    expect(reserveCalls).toBe(0);
   });
 });
 

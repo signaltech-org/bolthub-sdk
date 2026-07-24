@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { StreamSubscriptionManager } from "../sources/stream-subscriptions";
+import { handleCloseStream } from "../sources/stream-tools";
 import type { L402Client } from "@bolthub/pay";
 
 const enc = new TextEncoder();
@@ -92,6 +93,35 @@ describe("StreamSubscriptionManager", () => {
     // Long-poll returned on the event, not the 10s cap.
     expect(Date.now() - started).toBeLessThan(5000);
     mgr.closeAll();
+  });
+
+  // 2026-07-24 smoke finding F10: a 0-sat open under an active time pass
+  // was indistinguishable from a free endpoint, so every summary stayed
+  // silent about cost. Pass coverage is now recorded at open and stated.
+  test("pass-covered open records coverage; close_stream says 0 sats (covered)", async () => {
+    const mgr = new StreamSubscriptionManager();
+    const origin = fakeStream(0);
+    const expiresAt = Date.now() + 60_000;
+    (origin.client as unknown as Record<string, unknown>).getSessions = () =>
+      new Map([["gw/stream", { expiresAt }]]);
+
+    const opened = await mgr.open("https://gw/stream", origin.client);
+    if ("error" in opened) throw new Error(opened.error);
+    expect(opened.costSats).toBe(0);
+    expect(opened.passExpiresAt?.getTime()).toBe(expiresAt);
+
+    const message = handleCloseStream({ stream_id: opened.streamId }, mgr);
+    expect(message.content[0].text).toContain("0 sats (covered by active pass)");
+  });
+
+  test("free endpoint without a pass keeps the terse summary (no cost clause)", async () => {
+    const mgr = new StreamSubscriptionManager();
+    const origin = fakeStream(0);
+    const opened = await mgr.open("https://gw/stream", origin.client);
+    if ("error" in opened) throw new Error(opened.error);
+    expect(opened.passExpiresAt).toBeUndefined();
+    const message = handleCloseStream({ stream_id: opened.streamId }, mgr);
+    expect(message.content[0].text).not.toContain("sats");
   });
 
   test("close cancels the origin socket and returns a summary", async () => {

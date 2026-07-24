@@ -161,6 +161,22 @@ export function expandTilde(p: string): string {
   return p;
 }
 
+/**
+ * A receipts opt-in that arrived as a string (`--receipts X`,
+ * `RECEIPTS_PATH=X`, or a string value in the config file). Boolean-looking
+ * values are switches, never paths: `--receipts true` once resolved to a
+ * ledger at the literal path 'true', so every receipt write died with EROFS
+ * under Claude Desktop's read-only cwd (2026-07-24 smoke test, step 11).
+ * A file genuinely named like one of these words needs `./` or an absolute
+ * path.
+ */
+function receiptsFromString(raw: string): ResolvedConfig["receipts"] {
+  const word = raw.trim().toLowerCase();
+  if (["default", "true", "1", "yes", "on"].includes(word)) return {};
+  if (["false", "0", "no", "off", ""].includes(word)) return undefined;
+  return { path: expandTilde(raw.trim()) };
+}
+
 /** Load and validate a config file. Throws with a pointed message on bad JSON/schema. */
 export function loadConfigFile(path: string): ConfigFile {
   let raw: string;
@@ -245,12 +261,12 @@ export function resolveConfig(
   let receipts: ResolvedConfig["receipts"];
   const envReceipts = env.RECEIPTS_PATH?.trim();
   if (file.receipts === true) receipts = {};
-  else if (typeof file.receipts === "string") receipts = { path: expandTilde(file.receipts) };
+  else if (typeof file.receipts === "string") receipts = receiptsFromString(file.receipts);
   if (receipts === undefined && envReceipts) {
-    receipts = envReceipts === "default" ? {} : { path: expandTilde(envReceipts) };
+    receipts = receiptsFromString(envReceipts);
   }
   if (cli.receiptsPath !== undefined) {
-    receipts = cli.receiptsPath === "default" ? {} : { path: expandTilde(cli.receiptsPath) };
+    receipts = receiptsFromString(cli.receiptsPath);
   }
 
   return {

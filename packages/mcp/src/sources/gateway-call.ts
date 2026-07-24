@@ -2,6 +2,7 @@ import type { McpToolDefinition } from "./openapi-to-tools.js";
 import { WALLET_ENV_HINT } from "@bolthub/pay";
 import type { L402Client } from "@bolthub/pay";
 import {
+  activePassExpiry,
   clampStreamCaps,
   formatStreamWindow,
   isEventStreamResponse,
@@ -127,9 +128,19 @@ export async function executeToolCall(
     if (resp.ok && isEventStreamResponse(resp)) {
       const caps = clampStreamCaps({ stream_events, stream_seconds });
       const window = await readStreamWindow(resp, caps);
-      const costLine = callCost > 0 ? ` · cost: ${callCost} sats` : "";
+      // Pass state answers two different questions here: a 0-sat window
+      // says WHY it was free, and the close line says what the NEXT window
+      // costs — free-until-expiry right after buying a time pass, too
+      // (2026-07-24 smoke finding F10).
+      const pass = activePassExpiry(l402Client, url);
+      const costLine =
+        callCost > 0
+          ? ` · cost: ${callCost} sats`
+          : pass
+            ? " · 0 sats (covered by active pass)"
+            : "";
       return {
-        content: [{ type: "text", text: formatStreamWindow(window, caps, costLine) + suffix }],
+        content: [{ type: "text", text: formatStreamWindow(window, caps, costLine, pass) + suffix }],
         isError: window.reason === "error",
       };
     }

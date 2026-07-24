@@ -119,12 +119,40 @@ export async function readStreamWindow(
   return { events, reason, keepalives, durationMs: Date.now() - started, errorMessage };
 }
 
-function closeLine(w: StreamWindow, caps: { maxEvents: number; maxMs: number }): string {
+/**
+ * Expiry of a cached session (a time_pass window) covering this URL, when
+ * one is active. A 0-sat call reads identically whether the endpoint is
+ * free or pass-covered; this is how the message surfaces tell the
+ * difference and say so (2026-07-24 smoke finding F10).
+ */
+export function activePassExpiry(
+  client: { getSessions?: () => Map<string, { expiresAt: number }> } | undefined,
+  url: string,
+): Date | undefined {
+  if (!client || typeof client.getSessions !== "function") return undefined;
+  try {
+    const parsed = new URL(url);
+    const info = client.getSessions().get(`${parsed.host}${parsed.pathname}`);
+    if (info && info.expiresAt > Date.now()) return new Date(info.expiresAt);
+  } catch {
+    // Unparseable URL = no session key = no pass.
+  }
+  return undefined;
+}
+
+function closeLine(
+  w: StreamWindow,
+  caps: { maxEvents: number; maxMs: number },
+  passExpiresAt?: Date,
+): string {
+  const nextWindow = passExpiresAt
+    ? `(free under your active pass until ${passExpiresAt.toISOString()})`
+    : "(a new payment on paid endpoints)";
   switch (w.reason) {
     case "cap_events":
-      return `[stream closed: ${caps.maxEvents}-event window cap reached — call again for a new window (a new payment on paid endpoints)]`;
+      return `[stream closed: ${caps.maxEvents}-event window cap reached — call again for a new window ${nextWindow}]`;
     case "cap_seconds":
-      return `[stream closed: ${Math.round(caps.maxMs / 1000)}s window cap reached — call again for a new window (a new payment on paid endpoints)]`;
+      return `[stream closed: ${Math.round(caps.maxMs / 1000)}s window cap reached — call again for a new window ${nextWindow}]`;
     case "payment_required":
       return "[stream closed by the gateway: the paid window ended (event: payment_required). Pay again to reconnect.]";
     case "origin_closed":
@@ -147,6 +175,7 @@ export function formatStreamWindow(
   w: StreamWindow,
   caps: { maxEvents: number; maxMs: number },
   costLine: string,
+  passExpiresAt?: Date,
 ): string {
   const secs = (w.durationMs / 1000).toFixed(1);
   const header = `[stream] ${w.events.length} event${w.events.length === 1 ? "" : "s"} in ${secs}s (cap: ${caps.maxEvents} events / ${Math.round(caps.maxMs / 1000)}s)${costLine}`;
@@ -162,7 +191,7 @@ export function formatStreamWindow(
     return `${header}\n[no events this window — ${liveness}; this feed is event-driven and currently quiet, which is normal]`;
   }
 
-  return [header, ...lines, closeLine(w, caps)].join("\n");
+  return [header, ...lines, closeLine(w, caps, passExpiresAt)].join("\n");
 }
 
 function tryParse(text: string): unknown {

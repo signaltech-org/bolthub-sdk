@@ -184,6 +184,48 @@ describe("handleAnalyzeListing", () => {
     expect(result.content[0].text).toContain("REJECTS bolthub's signed traffic");
   });
 
+  // 2026-07-24 smoke finding F3: a 503 used to fold into `inconclusive`
+  // (LOW), masking whatever the probe couldn't see. Erroring origins are
+  // now their own MEDIUM finding, and the probed URL is cited.
+  test("unhealthy origin verdict is a MEDIUM finding citing the probed URL", async () => {
+    mockApi({
+      ...baseRoutes([endpointRow()]),
+      "POST /tenants/t-1/origins/o-1/check": {
+        check: {
+          verdict: "unhealthy",
+          checkedUrl: "https://origin.example.com/v1/things",
+          signed: { statusCode: 503 },
+          unsigned: { statusCode: 503 },
+        },
+      },
+    });
+    const result = await handleAnalyzeListing({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("MED:");
+    expect(text).toContain("is erroring");
+    expect(text).toContain("https://origin.example.com/v1/things");
+    expect(text).toContain("even after a retry");
+  });
+
+  test("inconclusive verdict stays LOW and cites the probed URL", async () => {
+    mockApi({
+      ...baseRoutes([endpointRow()]),
+      "POST /tenants/t-1/origins/o-1/check": {
+        check: {
+          verdict: "inconclusive",
+          checkedUrl: "https://origin.example.com/v1/things",
+          signed: { statusCode: 404 },
+          unsigned: { statusCode: 404 },
+        },
+      },
+    });
+    const result = await handleAnalyzeListing({}, API, TOKEN);
+    const text = result.content[0].text;
+    expect(text).toContain("LOW:");
+    expect(text).toContain("could not be confirmed");
+    expect(text).toContain("HTTP 404 at https://origin.example.com/v1/things");
+  });
+
   test("structural findings: thin description, missing examples, unpriced, undocumented path params", async () => {
     const rows = [
       endpointRow({

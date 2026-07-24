@@ -10,7 +10,7 @@
 
 import { SseParser, type SseFrame } from "@bolthub/pay";
 import type { L402Client } from "@bolthub/pay";
-import { type StreamCloseReason } from "./stream-window.js";
+import { activePassExpiry, type StreamCloseReason } from "./stream-window.js";
 
 export const SUB_BUFFER_MAX_EVENTS = 500;
 export const SUB_BUFFER_MAX_CHARS = 1_000_000;
@@ -31,6 +31,9 @@ interface Subscription {
   id: string;
   url: string;
   costSats: number;
+  /** True when the connection cost 0 sats because an active time pass
+   *  covered it — summaries say so instead of omitting cost (F10). */
+  passCovered: boolean;
   openedAt: number;
   lastReadAt: number;
   /** Next seq to hand this subscription's reader (single-cursor model). */
@@ -69,7 +72,9 @@ export class StreamSubscriptionManager {
     url: string,
     l402Client: L402Client,
     opts: { maxCostSats?: number } = {},
-  ): Promise<{ streamId: string; costSats: number } | { error: string }> {
+  ): Promise<
+    { streamId: string; costSats: number; passExpiresAt?: Date } | { error: string }
+  > {
     if (this.openCount >= maxConcurrentStreams()) {
       return {
         error:
@@ -99,10 +104,12 @@ export class StreamSubscriptionManager {
     }
 
     const id = `stream-${this.nextId++}`;
+    const passExpiresAt = costSats === 0 ? activePassExpiry(l402Client, url) : undefined;
     const sub: Subscription = {
       id,
       url,
       costSats,
+      passCovered: passExpiresAt !== undefined,
       openedAt: Date.now(),
       lastReadAt: Date.now(),
       cursor: 0,
@@ -118,7 +125,7 @@ export class StreamSubscriptionManager {
     this.armReap(sub);
     this.hookExit();
     void this.pump(sub, resp);
-    return { streamId: id, costSats };
+    return { streamId: id, costSats, passExpiresAt };
   }
 
   /** Background reader: origin bytes → parser → ring buffer. */
@@ -215,7 +222,7 @@ export class StreamSubscriptionManager {
         dropped: number;
         status: "live" | "closed";
         closeReason?: StreamCloseReason;
-        summary: { totalEvents: number; keepalives: number; durationMs: number; costSats: number };
+        summary: { totalEvents: number; keepalives: number; durationMs: number; costSats: number; passCovered: boolean };
       }
   > {
     const sub = this.subs.get(id);
@@ -255,6 +262,7 @@ export class StreamSubscriptionManager {
         keepalives: sub.keepalives,
         durationMs: Date.now() - sub.openedAt,
         costSats: sub.costSats,
+        passCovered: sub.passCovered,
       },
     };
 
@@ -265,7 +273,7 @@ export class StreamSubscriptionManager {
 
   close(id: string):
     | { error: string }
-    | { summary: { totalEvents: number; dropped: number; keepalives: number; durationMs: number; costSats: number } } {
+    | { summary: { totalEvents: number; dropped: number; keepalives: number; durationMs: number; costSats: number; passCovered: boolean } } {
     const sub = this.subs.get(id);
     if (!sub) {
       return { error: `No such stream "${id}".` };
@@ -279,6 +287,7 @@ export class StreamSubscriptionManager {
         keepalives: sub.keepalives,
         durationMs: Date.now() - sub.openedAt,
         costSats: sub.costSats,
+        passCovered: sub.passCovered,
       },
     };
   }

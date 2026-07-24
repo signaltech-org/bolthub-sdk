@@ -56,7 +56,14 @@ export async function handleOpenStream(
     });
     if ("error" in result) return text(result.error, true);
 
-    const costLine = result.costSats > 0 ? ` Paid ${result.costSats} sats for this connection.` : "";
+    // 0 sats is ambiguous (free endpoint vs pass-covered) — say which
+    // (2026-07-24 smoke finding F10).
+    const costLine =
+      result.costSats > 0
+        ? ` Paid ${result.costSats} sats for this connection.`
+        : result.passExpiresAt
+          ? ` 0 sats — covered by your active pass (expires ${result.passExpiresAt.toISOString()}).`
+          : "";
     return text(
       `Stream open: ${result.streamId} (${args.slug} ${args.path}).${costLine}\n` +
         `Reading is free from here: read_stream({ stream_id: "${result.streamId}", wait_seconds: 20 }) returns events since your last read, waiting up to wait_seconds if none are buffered. ` +
@@ -95,10 +102,21 @@ export async function handleReadStream(
   if (result.status === "closed") {
     lines.push(
       `[stream ended: ${closeReasonLine(result.closeReason)} — ${result.summary.totalEvents} events over ${secs}s` +
-        `${result.summary.costSats > 0 ? `, ${result.summary.costSats} sats paid` : ""}. This id is now forgotten.]`,
+        `${costClause(result.summary)}. This id is now forgotten.]`,
     );
   }
   return text(lines.join("\n"));
+}
+
+/**
+ * Cost clause for a stream summary. The docs promise summaries include
+ * cost, so 0 sats is stated (with the why) rather than omitted
+ * (2026-07-24 smoke finding F10).
+ */
+function costClause(s: { costSats: number; passCovered: boolean }): string {
+  if (s.costSats > 0) return `, ${s.costSats} sats paid for the connection`;
+  if (s.passCovered) return ", 0 sats (covered by active pass)";
+  return "";
 }
 
 export function handleCloseStream(
@@ -112,7 +130,7 @@ export function handleCloseStream(
   return text(
     `Stream ${args.stream_id} closed: ${s.totalEvents} events over ${secs}s` +
       `${s.dropped > 0 ? ` (${s.dropped} dropped by the buffer)` : ""}` +
-      `${s.costSats > 0 ? `, ${s.costSats} sats paid for the connection` : ""}.`,
+      `${costClause(s)}.`,
   );
 }
 

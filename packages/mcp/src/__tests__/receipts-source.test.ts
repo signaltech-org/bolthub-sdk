@@ -1,7 +1,17 @@
 import { describe, test, expect } from "bun:test";
+import { mkdtempSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { InMemoryReceiptStore, type Receipt } from "@bolthub/pay";
 import { ReceiptsSource } from "../sources/receipts";
 import { parseArgs, resolveConfig } from "../config";
+
+function writeConfig(json: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "bolthub-mcp-test-"));
+  const path = join(dir, "mcp.json");
+  writeFileSync(path, JSON.stringify(json));
+  return path;
+}
 
 function makeReceipt(overrides: Partial<Receipt> = {}): Receipt {
   return {
@@ -40,6 +50,37 @@ describe("receipts config resolution", () => {
       RECEIPTS_PATH: "/tmp/env-receipts.jsonl",
     });
     expect(config.receipts).toEqual({ path: "/tmp/env-receipts.jsonl" });
+  });
+
+  // 2026-07-24 smoke test, step 11: `true` passed as a value became the
+  // ledger PATH — open('true') in Claude Desktop's read-only cwd, EROFS,
+  // zero rows exported despite correct recording. Boolean-looking values
+  // must act as switches everywhere a receipts string can arrive.
+  test("boolean-looking values are switches, never ledger paths", () => {
+    const flagTrue = resolveConfig(parseArgs(["node", "mcp", "--receipts", "true"]), {});
+    expect(flagTrue.receipts).toEqual({});
+
+    const envTrue = resolveConfig(parseArgs(["node", "mcp"]), { RECEIPTS_PATH: "TRUE" });
+    expect(envTrue.receipts).toEqual({});
+
+    const fileString = resolveConfig(
+      parseArgs(["node", "mcp", "--config", writeConfig({ receipts: "true" })]),
+      {},
+    );
+    expect(fileString.receipts).toEqual({});
+  });
+
+  test("--receipts false switches recording off, overriding file and env", () => {
+    const config = resolveConfig(
+      parseArgs(["node", "mcp", "--config", writeConfig({ receipts: true }), "--receipts", "false"]),
+      { RECEIPTS_PATH: "/elsewhere.jsonl" },
+    );
+    expect(config.receipts).toBeUndefined();
+  });
+
+  test("a path that merely contains a boolean word is still a path", () => {
+    const config = resolveConfig(parseArgs(["node", "mcp", "--receipts", "./true"]), {});
+    expect(config.receipts).toEqual({ path: "./true" });
   });
 });
 
