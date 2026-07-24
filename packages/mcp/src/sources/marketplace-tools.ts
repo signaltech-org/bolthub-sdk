@@ -2,6 +2,12 @@ import type { ApiClient, DirectoryEntry } from "./api-client.js";
 import { WALLET_ENV_HINT, readPaymentStatus, attenuate } from "@bolthub/pay";
 import type { L402Client, AttenuateOptions } from "@bolthub/pay";
 import { auditMint, auditRevoke } from "../telemetry.js";
+import {
+  clampStreamCaps,
+  formatStreamWindow,
+  isEventStreamResponse,
+  readStreamWindow,
+} from "./stream-window.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -77,6 +83,11 @@ function formatEntryDetailed(entry: DirectoryEntry, apiClient: ApiClient): strin
     if (ep.title) lines.push(`Title: ${ep.title}`);
     if (ep.description) lines.push(ep.description);
     lines.push(`Pricing: ${formatPricing(ep)}`);
+    if (ep.streaming) {
+      lines.push(
+        "Streaming (SSE): live event feed. One payment buys one stream connection, not per-event billing. Taste it with call_api + stream_events/stream_seconds, or monitor continuously with open_stream/read_stream/close_stream.",
+      );
+    }
     if (ep.freeTryEnabled) lines.push("Free try: available");
     if (ep.docsUrl) lines.push(`Docs: ${ep.docsUrl}`);
     if (ep.parameters && ep.parameters.length > 0) {
@@ -219,6 +230,8 @@ export async function handleCallApi(
     body?: Record<string, unknown> | string;
     query_params?: Record<string, string>;
     headers?: Record<string, string>;
+    stream_events?: number;
+    stream_seconds?: number;
   },
   apiClient: ApiClient,
   l402Client: L402Client | undefined,
@@ -251,6 +264,16 @@ export async function handleCallApi(
 
     if (!l402Client) {
       const resp = await fetch(url, fetchOptions);
+      // Free streaming endpoint: window-read (a plain fetch here has no
+      // timeout, so resp.text() on a live stream would hang forever).
+      if (resp.ok && isEventStreamResponse(resp)) {
+        const caps = clampStreamCaps(args);
+        const window = await readStreamWindow(resp, caps);
+        return {
+          content: [{ type: "text", text: formatStreamWindow(window, caps, "") }],
+          isError: window.reason === "error",
+        };
+      }
       const text = await resp.text();
       if (resp.status === 402) {
         return {
@@ -268,11 +291,17 @@ export async function handleCallApi(
     // nothing past it); the per-request onPaid records this call's exact
     // cost — totalSpent deltas are racy under a shared budget.
     const maxCost = args.max_cost_sats && args.max_cost_sats > 0 ? args.max_cost_sats : undefined;
+    // stream_* args declare the caller expects a live SSE feed: the SDK
+    // then bounds only time-to-headers, never the body read. Without the
+    // args a streaming response is still detected by content type below
+    // (default window caps well inside the SDK's whole-request timeout).
+    const wantsStream = args.stream_events != null || args.stream_seconds != null;
     let callCost = 0;
     const resp = await l402Client
       .request(url, {
         ...fetchOptions,
         maxCostSats: maxCost,
+        ...(wantsStream ? { streaming: true } : {}),
         onPaid: (info) => {
           callCost = info.amount;
         },
@@ -284,10 +313,24 @@ export async function handleCallApi(
         throw err;
       });
 
-    const text = await resp.text();
     const suffix = (callCost > 0
       ? `\n\n---\nCost: ${callCost} sats${budgetSummary(l402Client)}`
       : budgetSummary(l402Client)) + paymentOutcomeLine(resp, callCost > 0, externalAuth);
+
+    // Live SSE body: read a bounded window instead of buffering — a
+    // stream never ends, so resp.text() here used to burn the payment
+    // and time out (the hub's P0 bug, on the agent surface).
+    if (resp.ok && isEventStreamResponse(resp)) {
+      const caps = clampStreamCaps(args);
+      const window = await readStreamWindow(resp, caps);
+      const costLine = callCost > 0 ? ` · cost: ${callCost} sats` : "";
+      return {
+        content: [{ type: "text", text: formatStreamWindow(window, caps, costLine) + suffix }],
+        isError: window.reason === "error",
+      };
+    }
+
+    const text = await resp.text();
 
     if (!resp.ok) {
       return {
@@ -296,7 +339,10 @@ export async function handleCallApi(
       };
     }
 
-    return { content: [{ type: "text", text: prettyJson(text) + suffix }] };
+    const streamNote = wantsStream
+      ? "\n[note: stream_events/stream_seconds were passed but the endpoint returned a complete (non-stream) response]"
+      : "";
+    return { content: [{ type: "text", text: prettyJson(text) + streamNote + suffix }] };
   } catch (err) {
     const suffix = budgetSummary(l402Client);
     return {

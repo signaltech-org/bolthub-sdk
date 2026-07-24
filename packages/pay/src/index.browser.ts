@@ -6,6 +6,8 @@ export { NwcWallet } from "./wallets/nwc";
 export { WebLnWallet, isWebLnAvailable } from "./wallets/webln";
 // FileSessionStore is intentionally omitted — it uses Node.js fs/path/os APIs
 export type { SessionStore, SessionData } from "./http/session-store";
+export { SseParser } from "./http/sse";
+export type { SseFrame } from "./http/sse";
 export type { WalletAdapter, L402ClientOptions, L402Challenge, L402RequestOptions, PaidInfo } from "./http/types";
 export type { LnbitsWalletOptions } from "./wallets/lnbits";
 export type { NwcConnection } from "./wallets/nwc";

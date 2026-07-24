@@ -1,6 +1,12 @@
 import type { McpToolDefinition } from "./openapi-to-tools.js";
 import { WALLET_ENV_HINT } from "@bolthub/pay";
 import type { L402Client } from "@bolthub/pay";
+import {
+  clampStreamCaps,
+  formatStreamWindow,
+  isEventStreamResponse,
+  readStreamWindow,
+} from "./stream-window.js";
 
 /** Path template segments like `/foo/{id}/bar` → ["id"]. */
 export function pathPlaceholderNames(url: string): string[] {
@@ -38,7 +44,10 @@ export async function executeToolCall(
   l402Client: L402Client | undefined,
 ): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
   try {
-    const { body, ...rest } = args;
+    const { body, stream_events, stream_seconds, ...rest } = args as Record<string, unknown> & {
+      stream_events?: number;
+      stream_seconds?: number;
+    };
 
     let url = tool.meta.url;
     const remaining: Record<string, unknown> = { ...rest };
@@ -74,6 +83,16 @@ export async function executeToolCall(
 
     if (!l402Client) {
       const resp = await fetch(url, fetchOptions);
+      // Free streaming endpoint: window-read (a plain fetch here has no
+      // timeout, so resp.text() on a live stream would hang forever).
+      if (resp.ok && isEventStreamResponse(resp)) {
+        const caps = clampStreamCaps({ stream_events, stream_seconds });
+        const window = await readStreamWindow(resp, caps);
+        return {
+          content: [{ type: "text", text: formatStreamWindow(window, caps, "") }],
+          isError: window.reason === "error",
+        };
+      }
       const text = await resp.text();
       if (resp.status === 402) {
         return {
@@ -92,14 +111,30 @@ export async function executeToolCall(
     let callCost = 0;
     const resp = await l402Client.request(url, {
       ...fetchOptions,
+      // Declared streaming endpoints get the SDK's headers-only timeout;
+      // the body is then window-read below, never buffered.
+      ...(tool.meta.streaming ? { streaming: true } : {}),
       onPaid: (info) => {
         callCost = info.amount;
       },
     });
-    const text = await resp.text();
     const suffix = callCost > 0
       ? `\n\n---\nCost: ${callCost} sats${budgetSummary(l402Client)}`
       : budgetSummary(l402Client);
+
+    // Live SSE body (declared or sniffed): bounded window instead of a
+    // buffering resp.text() that would burn the payment and time out.
+    if (resp.ok && isEventStreamResponse(resp)) {
+      const caps = clampStreamCaps({ stream_events, stream_seconds });
+      const window = await readStreamWindow(resp, caps);
+      const costLine = callCost > 0 ? ` · cost: ${callCost} sats` : "";
+      return {
+        content: [{ type: "text", text: formatStreamWindow(window, caps, costLine) + suffix }],
+        isError: window.reason === "error",
+      };
+    }
+
+    const text = await resp.text();
 
     if (!resp.ok) {
       return {

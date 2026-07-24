@@ -13,6 +13,8 @@ export interface McpToolDefinition {
     url: string;
     method: string;
     path: string;
+    /** From the spec's x-streaming: live SSE endpoint, window-read it. */
+    streaming?: boolean;
   };
 }
 
@@ -41,6 +43,7 @@ interface OpenApiOperation {
     durationMinutes?: number;
     unitCostSats?: number;
   };
+  "x-streaming"?: boolean;
 }
 
 interface OpenApiSpec {
@@ -104,6 +107,18 @@ export function buildInputSchema(op: OpenApiOperation, method: string) {
       properties.body = { type: "object", description: "JSON request body" };
     }
     if (op.requestBody.required) required.push("body");
+  }
+
+  if (op["x-streaming"]) {
+    properties.stream_events = {
+      type: "number",
+      description:
+        "Live SSE endpoint: return after this many events (default 20, max 200). Zero events in a window is normal for event-driven feeds.",
+    };
+    properties.stream_seconds = {
+      type: "number",
+      description: "Live SSE endpoint: return after this many seconds of listening (default 10, max 60).",
+    };
   }
 
   if (Object.keys(properties).length === 0) {
@@ -178,6 +193,7 @@ export function convertOpenApiToTools(
           url: `${baseUrl}${path}`,
           method: method.toUpperCase(),
           path,
+          ...(operation["x-streaming"] ? { streaming: true } : {}),
         },
       });
     }

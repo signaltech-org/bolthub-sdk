@@ -34,6 +34,13 @@ import {
 import type { SourceTool, ToolSource } from "./source.js";
 import type { PaymentServices } from "../payment.js";
 import type { ToolResult } from "@bolthub/pay";
+import {
+  handleOpenStream,
+  handleReadStream,
+  handleCloseStream,
+  STREAM_TOOL_DEFS,
+} from "./stream-tools.js";
+import { StreamSubscriptionManager } from "./stream-subscriptions.js";
 
 const TOOLS: SourceTool[] = [
   {
@@ -109,6 +116,16 @@ const TOOLS: SourceTool[] = [
           type: "object",
           additionalProperties: { type: "string" },
           description: "Additional HTTP headers",
+        },
+        stream_events: {
+          type: "number",
+          description:
+            "For streaming (SSE) endpoints only: return after this many live events (default 20, max 200). One call buys one stream window; zero events in a window is normal for event-driven feeds. For continuous monitoring use open_stream instead.",
+        },
+        stream_seconds: {
+          type: "number",
+          description:
+            "For streaming (SSE) endpoints only: return after this many seconds of listening (default 10, max 60).",
         },
       },
       required: ["slug", "path"],
@@ -415,6 +432,7 @@ const TOOLS: SourceTool[] = [
     },
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   },
+  ...(STREAM_TOOL_DEFS as SourceTool[]),
 ];
 
 export class MarketplaceSource implements ToolSource {
@@ -424,6 +442,7 @@ export class MarketplaceSource implements ToolSource {
   private readonly apiClient: ApiClient;
   private readonly apiUrl?: string;
   private readonly services: PaymentServices;
+  private readonly streams = new StreamSubscriptionManager();
 
   constructor(options: { apiUrl?: string }, services: PaymentServices) {
     this.apiUrl = options.apiUrl;
@@ -458,6 +477,23 @@ export class MarketplaceSource implements ToolSource {
           args as Parameters<typeof handleCallApi>[0],
           this.apiClient,
           l402Client,
+        );
+      case "open_stream":
+        return handleOpenStream(
+          args as Parameters<typeof handleOpenStream>[0],
+          this.apiClient,
+          l402Client,
+          this.streams,
+        );
+      case "read_stream":
+        return handleReadStream(
+          args as Parameters<typeof handleReadStream>[0],
+          this.streams,
+        );
+      case "close_stream":
+        return handleCloseStream(
+          args as Parameters<typeof handleCloseStream>[0],
+          this.streams,
         );
       case "buy_credit":
         return handleBuyCredit(
@@ -551,6 +587,7 @@ export class MarketplaceSource implements ToolSource {
   }
 
   async close(): Promise<void> {
-    // Stateless.
+    // Cancel any held stream sockets so origins see clean disconnects.
+    this.streams.closeAll();
   }
 }

@@ -14,6 +14,8 @@ export interface DirectoryEndpoint {
   durationMinutes: number | null;
   unitCostSats: number | null;
   freeTryEnabled: boolean;
+  /** Live SSE endpoint: the gateway streams its body unbuffered. */
+  streaming?: boolean;
   exampleRequest: Record<string, unknown> | null;
   exampleResponse: Record<string, unknown> | null;
   parameters?: {

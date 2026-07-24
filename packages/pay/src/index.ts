@@ -78,6 +78,8 @@ export type {
 export { readPaymentStatus, PAYMENT_HEADER, PAYMENT_CODE_HEADER } from "./http/payment-status";
 export type { PaymentStatus, PaymentState, PaymentCode } from "./http/payment-status";
 export { FileSessionStore } from "./http/session-store";
+export { SseParser } from "./http/sse";
+export type { SseFrame } from "./http/sse";
 export type { SessionStore, SessionData } from "./http/session-store";
 export { FileReceiptStore, InMemoryReceiptStore, completeReceipt } from "./http/receipt-store";
 export type { Receipt, ReceiptStore } from "./http/receipt-store";
