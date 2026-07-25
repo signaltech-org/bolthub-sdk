@@ -1,4 +1,4 @@
-import type { WalletAdapter } from "../http/types";
+import type { WalletAdapter, WalletDiagnostics } from "../http/types";
 
 /** Configuration for connecting to a Phoenixd node. */
 export interface PhoenixdWalletOptions {
@@ -48,5 +48,24 @@ export class PhoenixdWallet implements WalletAdapter {
     }
 
     return { preimage };
+  }
+
+  async diagnose(): Promise<WalletDiagnostics> {
+    const d: WalletDiagnostics = { kind: "phoenixd" };
+    try {
+      const resp = await fetch(`${this.baseUrl}/getbalance`, {
+        headers: { Authorization: this.authHeader },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+      if (!resp.ok) {
+        d.limitations = [`balance probe refused (HTTP ${resp.status}) — check the password`];
+        return d;
+      }
+      const body = await resp.json();
+      if (Number.isFinite(Number(body.balanceSat))) d.balanceSats = Number(body.balanceSat);
+    } catch (err) {
+      d.limitations = [`balance probe failed: ${err instanceof Error ? err.message : String(err)}`];
+    }
+    return d;
   }
 }

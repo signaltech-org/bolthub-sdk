@@ -1,4 +1,4 @@
-import type { WalletAdapter } from "../http/types";
+import type { WalletAdapter, WalletDiagnostics } from "../http/types";
 
 /** Configuration for connecting to an LNbits instance. */
 export interface LnbitsWalletOptions {
@@ -43,5 +43,25 @@ export class LnbitsWallet implements WalletAdapter {
     }
 
     return { preimage };
+  }
+
+  async diagnose(): Promise<WalletDiagnostics> {
+    const d: WalletDiagnostics = { kind: "lnbits" };
+    try {
+      const resp = await fetch(`${this.url}/api/v1/wallet`, {
+        headers: { "X-Api-Key": this.adminKey },
+      });
+      if (!resp.ok) {
+        d.limitations = [`wallet probe refused (HTTP ${resp.status}) — check the API key`];
+        return d;
+      }
+      const body = await resp.json();
+      // LNbits reports balance in millisats.
+      if (Number.isFinite(Number(body.balance))) d.balanceSats = Math.floor(Number(body.balance) / 1000);
+      if (body.name) d.alias = body.name;
+    } catch (err) {
+      d.limitations = [`wallet probe failed: ${err instanceof Error ? err.message : String(err)}`];
+    }
+    return d;
   }
 }

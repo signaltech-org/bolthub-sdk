@@ -3,6 +3,7 @@ import type { SessionStore, SessionData } from "./session-store";
 import type { ReceiptStore } from "./receipt-store";
 import { exportReceipts } from "./receipt-export";
 import type { Budget } from "../budget";
+import { describePaymentFailure } from "../errors";
 import { bolt11AmountSats } from "./invoice";
 import { readPaymentStatus, type PaymentStatus } from "./payment-status";
 
@@ -972,25 +973,10 @@ export class L402Client {
   }
 }
 
-/**
- * Translate a raw wallet/node payment error into something an agent can
- * act on (smoke-test finding M5). The raw message is preserved — callers
- * and logs still see exactly what the wallet said — with the actionable
- * reading appended for the common failure classes.
- */
-export function describePaymentFailure(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err ?? "Payment failed");
-  if (/unknown destination|unable to find a path|no[_ ]?route|not enough capacity/i.test(raw)) {
-    return `${raw} — the destination (the seller's wallet) can't be reached on the Lightning graph. It likely has no channels or no inbound liquidity (common for a brand-new node), or is offline.`;
-  }
-  if (/self[- ]?payment|pay.*own invoice|to self/i.test(raw)) {
-    return `${raw} — the spending wallet and the invoice issuer appear to be the same wallet. Lightning cannot pay self-issued invoices; use a different spending wallet.`;
-  }
-  if (/insufficient|not enough (balance|funds)/i.test(raw)) {
-    return `${raw} — the spending wallet doesn't have enough balance or outbound capacity for this amount.`;
-  }
-  return raw;
-}
+// Moved to ../errors so the TPP ToolClient can share it without importing
+// this module; re-exported here because existing consumers import it from
+// the http client.
+export { describePaymentFailure } from "../errors";
 
 /** Base error for all L402-related failures. */
 export class L402Error extends Error {

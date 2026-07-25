@@ -19,6 +19,7 @@ import { GatewaySource } from "./sources/gateway.js";
 import { MarketplaceSource } from "./sources/marketplace.js";
 import { McpServerSource } from "./sources/mcp.js";
 import { ReceiptsSource } from "./sources/receipts.js";
+import { WalletSource } from "./sources/wallet-tools.js";
 import type { ToolSource } from "./sources/source.js";
 import { buildAggregate } from "./aggregate.js";
 import { createUnifiedServer, serveStdio } from "./server.js";
@@ -156,6 +157,9 @@ async function main() {
           : undefined,
       }),
     );
+  }
+  if (wallet) {
+    sources.push(new WalletSource(wallet, services.l402Client));
   }
   if (sources.length === 0) {
     console.error("No tool sources configured. Run with --help for the config format.");

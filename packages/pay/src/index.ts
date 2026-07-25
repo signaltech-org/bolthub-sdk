@@ -70,6 +70,7 @@ export {
 } from "./http/client";
 export type {
   WalletAdapter,
+  WalletDiagnostics,
   L402ClientOptions,
   L402Challenge,
   L402RequestOptions,

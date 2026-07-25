@@ -8,6 +8,7 @@ import {
   isEventStreamResponse,
   readStreamWindow,
 } from "./stream-window.js";
+import { paymentFailureHint } from "./wallet-tools.js";
 
 /** Path template segments like `/foo/{id}/bar` → ["id"]. */
 export function pathPlaceholderNames(url: string): string[] {
@@ -159,7 +160,7 @@ export async function executeToolCall(
     const message = err instanceof Error ? err.message : String(err);
     const suffix = budgetSummary(l402Client);
     return {
-      content: [{ type: "text", text: `Error: ${message}${suffix}` }],
+      content: [{ type: "text", text: `Error: ${message}${paymentFailureHint(err)}${suffix}` }],
       isError: true,
     };
   }

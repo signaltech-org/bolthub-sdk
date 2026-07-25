@@ -168,4 +168,80 @@ describe("describePaymentFailure (M5 payer-error translation)", () => {
     const { describePaymentFailure } = await import("../http/client");
     expect(describePaymentFailure(new Error("weird wallet noise"))).toBe("weird wallet noise");
   });
+
+  // F11 (2026-07-25 smoke): NWC wallets return generic messages where only
+  // the NIP-47 code carries the cause — the code must be classified and
+  // quoted, never dropped.
+  const nip47 = (message: string, code: string) => {
+    const err = new Error(message) as Error & { code: string };
+    err.code = code;
+    return err;
+  };
+
+  test("NIP-47 codes are quoted and classified even when the message is generic", async () => {
+    const { describePaymentFailure } = await import("../http/client");
+    const cases: Array<[string, string]> = [
+      ["INSUFFICIENT_BALANCE", "enough balance"],
+      ["RESTRICTED", "pay_invoice permission"],
+      ["UNAUTHORIZED", "revoked"],
+      ["QUOTA_EXCEEDED", "spending budget"],
+      ["RATE_LIMITED", "rate-limiting"],
+      ["NOT_IMPLEMENTED", "not implemented"],
+      ["PAYMENT_FAILED", "outbound channel liquidity"],
+    ];
+    for (const [code, expected] of cases) {
+      const msg = describePaymentFailure(nip47("Problem sending payment", code));
+      expect(msg).toContain("Problem sending payment"); // raw preserved
+      expect(msg).toContain(`[wallet error code: ${code}]`); // code quoted
+      expect(msg.toLowerCase()).toContain(expected.toLowerCase());
+    }
+  });
+
+  test("INTERNAL/OTHER still quote the code and point at the payer-side checks", async () => {
+    const { describePaymentFailure } = await import("../http/client");
+    const msg = describePaymentFailure(nip47("Problem sending payment", "INTERNAL"));
+    expect(msg).toContain("[wallet error code: INTERNAL]");
+    expect(msg).toContain("balance");
+    expect(msg).toContain("liquidity");
+  });
+
+  test("relay timeouts read as wallet-unreachable", async () => {
+    const { describePaymentFailure } = await import("../http/client");
+    const msg = describePaymentFailure(nip47("reply timeout: event abc123", "INTERNAL"));
+    expect(msg).toContain("did not respond");
+  });
+
+  test("ToolClient wraps payer failures through the same translation", async () => {
+    const { ToolClient, l402Payer, PaymentError } = await import("../index");
+    const wallet = {
+      payInvoice: async () => {
+        throw nip47("Problem sending payment", "RESTRICTED");
+      },
+    };
+    const client = new ToolClient({ payers: [l402Payer({ wallet })] });
+    const offerResult = {
+      isError: true,
+      content: [],
+      _meta: {
+        "ai.bolthub/payment": {
+          status: "payment_required",
+          version: "1",
+          price: { amount: 5, asset: "sat" },
+          resource: { uri: "tool:demo" },
+          offers: [{ scheme: "l402", amount: 5, asset: "sat", invoice: "lnbcmock5", token: "tok" }],
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+    };
+    const caller = async (meta?: Record<string, unknown>) =>
+      meta ? { content: [{ type: "text", text: "paid" }] } : (offerResult as never);
+    await expect(client.call(caller)).rejects.toThrow(PaymentError);
+    try {
+      await client.call(caller);
+      throw new Error("expected client.call to reject");
+    } catch (err) {
+      expect((err as Error).message).toContain("[wallet error code: RESTRICTED]");
+      expect((err as Error).message).toContain("pay_invoice permission");
+    }
+  });
 });

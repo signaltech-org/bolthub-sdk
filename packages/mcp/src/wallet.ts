@@ -20,6 +20,18 @@ async function nwcConnect(uri: string): Promise<NwcConnection & { close?: () => 
       const result = await client.payInvoice({ invoice });
       return { preimage: result.preimage };
     },
+    // Diagnostics for `wallet_status` / `NwcWallet.diagnose()` — the payer
+    // side of a failed payment must be inspectable (F11).
+    walletPubkey: client.walletPubkey,
+    getBalance: async () => {
+      // NIP-47 get_balance reports millisats.
+      const { balance } = await client.getBalance();
+      return { balanceSats: Math.floor(balance / 1000) };
+    },
+    getInfo: async () => {
+      const info = await client.getInfo();
+      return { alias: info.alias, network: info.network, pubkey: info.pubkey, methods: info.methods };
+    },
     close: () => client.close(),
   };
 }

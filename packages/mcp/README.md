@@ -70,7 +70,8 @@ Then point the client at it:
 
 ### What the agent sees
 
-- Marketplace meta-tools, unprefixed: `search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_credit`, `mint_scoped_token`, `revoke_token`, `deploy_node`, `node_status`, `list_api`, `analyze_listing`, `publish_listing`, `get_earnings`, `usage_summary`, `connect_account`, `connect_status`, `create_workspace`, `connect_wallet`, `get_onboarding_state`.
+- Marketplace meta-tools, unprefixed: `search_apis`, `get_api_details`, `preview_cost`, `call_api`, `buy_credit`, `mint_scoped_token`, `revoke_token`, `deploy_node`, `node_status`, `list_api`, `analyze_listing`, `publish_listing`, `get_earnings`, `usage_summary`, `connect_account`, `connect_status`, `create_workspace`, `connect_wallet`, `get_onboarding_state`, plus `open_stream` / `read_stream` / `close_stream` for live SSE feeds.
+- With a wallet configured, `wallet_status`: inspect the SPENDING wallet (balance, permissions, connectivity) — the payer-side counterpart to `node_status`, and the first thing to run when a payment fails.
 - Gateway endpoints, prefixed by gateway slug: `btc-intel__get_v1_history_candles`, ….
 - Downstream MCP tools, prefixed by their config key: `filesystem__read_file`, ….
 

@@ -14,6 +14,7 @@ import {
   maxConcurrentStreams,
 } from "./stream-subscriptions.js";
 import type { StreamCloseReason } from "./stream-window.js";
+import { paymentFailureHint } from "./wallet-tools.js";
 
 function text(t: string, isError = false): ToolResult {
   return { content: [{ type: "text", text: t }], ...(isError ? { isError: true } : {}) };
@@ -70,7 +71,7 @@ export async function handleOpenStream(
         `Zero events between reads is normal for event-driven feeds. close_stream when done; idle streams auto-close after 10 minutes without a read.`,
     );
   } catch (err) {
-    return text(`Error: ${err instanceof Error ? err.message : String(err)}`, true);
+    return text(`Error: ${err instanceof Error ? err.message : String(err)}${paymentFailureHint(err)}`, true);
   }
 }
 

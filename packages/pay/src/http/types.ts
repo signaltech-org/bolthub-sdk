@@ -13,6 +13,45 @@ export interface WalletAdapter {
    * relay websocket alive). Owners should call it when done; clients never do.
    */
   close?(): void;
+
+  /**
+   * Optional payer-side health probe: balance, permissions, identity —
+   * whatever the backend will disclose. Exists so a failed payment can be
+   * diagnosed from the SPENDING side (2026-07-25 smoke finding F11: an
+   * opaque wallet error left no way to inspect the payer at all). Probes
+   * that fail or aren't permitted must degrade into `limitations` entries,
+   * never throw.
+   */
+  diagnose?(): Promise<WalletDiagnostics>;
+}
+
+/**
+ * Result of {@link WalletAdapter.diagnose}. Every field beyond `kind` is
+ * best-effort: backends differ in what they disclose, and a restricted
+ * credential (e.g. an invoice-only macaroon or receive-only NWC connection)
+ * may refuse the probes themselves.
+ */
+export interface WalletDiagnostics {
+  /** Adapter kind: "lnd", "lnbits", "phoenixd", "nwc", or custom. */
+  kind: string;
+  /** Spendable balance in sats, when the backend reports one. */
+  balanceSats?: number;
+  /** Wallet/node alias, when reported. */
+  alias?: string;
+  /** Network ("mainnet", "signet", …), when reported. */
+  network?: string;
+  /** Wallet identity (node/wallet-service pubkey), when reported. */
+  pubkey?: string;
+  /** Methods this connection is permitted to call (NWC `get_info`). */
+  methods?: string[];
+  /**
+   * Whether this connection can pay invoices. `false` means the backend
+   * POSITIVELY reports the permission missing (the F11 receive-only-NWC
+   * case); `undefined` means it couldn't be determined.
+   */
+  canPayInvoices?: boolean;
+  /** Probes that could not run, with the reason each failed. */
+  limitations?: string[];
 }
 
 /** Options accepted by the {@link L402Client} constructor. */

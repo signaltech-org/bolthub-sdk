@@ -1,4 +1,4 @@
-import type { WalletAdapter } from "../http/types";
+import type { WalletAdapter, WalletDiagnostics } from "../http/types";
 
 /** Configuration for connecting to an LND node via its REST API. */
 export interface LndWalletOptions {
@@ -50,5 +50,45 @@ export class LndWallet implements WalletAdapter {
     }
 
     return { preimage };
+  }
+
+  async diagnose(): Promise<WalletDiagnostics> {
+    const d: WalletDiagnostics = { kind: "lnd" };
+    const limitations: string[] = [];
+
+    try {
+      const resp = await fetch(`${this.host}/v1/balance/channels`, {
+        headers: { "Grpc-Metadata-macaroon": this.macaroon },
+      });
+      if (!resp.ok) {
+        limitations.push(`channel-balance probe refused (HTTP ${resp.status}) — the macaroon may lack read permission`);
+      } else {
+        const body = await resp.json();
+        const sats = Number(body.local_balance?.sat ?? body.balance);
+        if (Number.isFinite(sats)) d.balanceSats = sats;
+      }
+    } catch (err) {
+      limitations.push(`channel-balance probe failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      const resp = await fetch(`${this.host}/v1/getinfo`, {
+        headers: { "Grpc-Metadata-macaroon": this.macaroon },
+      });
+      if (resp.ok) {
+        const info = await resp.json();
+        if (info.alias) d.alias = info.alias;
+        if (info.identity_pubkey) d.pubkey = info.identity_pubkey;
+        const chain = Array.isArray(info.chains) ? info.chains[0] : undefined;
+        if (chain?.network) d.network = chain.network;
+      } else {
+        limitations.push(`getinfo probe refused (HTTP ${resp.status})`);
+      }
+    } catch (err) {
+      limitations.push(`getinfo probe failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    if (limitations.length > 0) d.limitations = limitations;
+    return d;
   }
 }

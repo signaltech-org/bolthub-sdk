@@ -16,7 +16,7 @@
 
 import { PAYMENT_META_KEY } from "../paywall";
 import { Budget } from "../budget";
-import { PaymentError, PaymentBudgetError } from "../errors";
+import { PaymentError, PaymentBudgetError, describePaymentFailure } from "../errors";
 import type { Offer, PaymentChallenge, PaymentPayer, ToolResult } from "../types";
 
 export type PayStage = "calling" | "paying" | "retrying";
@@ -115,7 +115,7 @@ export class ToolClient {
     } catch (err) {
       this.rollback(offer);
       throw new PaymentError(
-        `Failed to pay ${offer.amount} ${offer.asset} via ${payer.scheme}: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to pay ${offer.amount} ${offer.asset} via ${payer.scheme}: ${describePaymentFailure(err)}`,
         err,
       );
     }

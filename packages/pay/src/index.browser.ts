@@ -8,7 +8,7 @@ export { WebLnWallet, isWebLnAvailable } from "./wallets/webln";
 export type { SessionStore, SessionData } from "./http/session-store";
 export { SseParser } from "./http/sse";
 export type { SseFrame } from "./http/sse";
-export type { WalletAdapter, L402ClientOptions, L402Challenge, L402RequestOptions, PaidInfo } from "./http/types";
+export type { WalletAdapter, WalletDiagnostics, L402ClientOptions, L402Challenge, L402RequestOptions, PaidInfo } from "./http/types";
 export type { LnbitsWalletOptions } from "./wallets/lnbits";
 export type { NwcConnection } from "./wallets/nwc";
 

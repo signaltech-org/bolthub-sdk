@@ -3,11 +3,13 @@ import { WALLET_ENV_HINT, readPaymentStatus, attenuate } from "@bolthub/pay";
 import type { L402Client, AttenuateOptions } from "@bolthub/pay";
 import { auditMint, auditRevoke } from "../telemetry.js";
 import {
+  activePassExpiry,
   clampStreamCaps,
   formatStreamWindow,
   isEventStreamResponse,
   readStreamWindow,
 } from "./stream-window.js";
+import { paymentFailureHint } from "./wallet-tools.js";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -323,9 +325,18 @@ export async function handleCallApi(
     if (resp.ok && isEventStreamResponse(resp)) {
       const caps = clampStreamCaps(args);
       const window = await readStreamWindow(resp, caps);
-      const costLine = callCost > 0 ? ` · cost: ${callCost} sats` : "";
+      // Pass state answers two different questions: a 0-sat window says
+      // WHY it was free, and the close line says what the NEXT window
+      // costs (2026-07-25 smoke: F10's last unfixed surface was here).
+      const pass = activePassExpiry(l402Client, url);
+      const costLine =
+        callCost > 0
+          ? ` · cost: ${callCost} sats`
+          : pass
+            ? " · 0 sats (covered by active pass)"
+            : "";
       return {
-        content: [{ type: "text", text: formatStreamWindow(window, caps, costLine) + suffix }],
+        content: [{ type: "text", text: formatStreamWindow(window, caps, costLine, pass) + suffix }],
         isError: window.reason === "error",
       };
     }
@@ -346,7 +357,7 @@ export async function handleCallApi(
   } catch (err) {
     const suffix = budgetSummary(l402Client);
     return {
-      content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}${suffix}` }],
+      content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}${paymentFailureHint(err)}${suffix}` }],
       isError: true,
     };
   }
@@ -396,7 +407,7 @@ export async function handleBuyCredit(
       content: [
         {
           type: "text",
-          text: `Error buying credit: ${err instanceof Error ? err.message : String(err)}${budgetSummary(l402Client)}`,
+          text: `Error buying credit: ${err instanceof Error ? err.message : String(err)}${paymentFailureHint(err)}${budgetSummary(l402Client)}`,
         },
       ],
       isError: true,

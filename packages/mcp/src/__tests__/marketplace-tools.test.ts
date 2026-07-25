@@ -745,3 +745,91 @@ describe("handleRevokeToken", () => {
     expect(result.content[0].text).toContain("requires a wallet");
   });
 });
+
+// F10 (2026-07-25 regression): the windowed call_api surface was the last
+// one still claiming "a new payment" while a pass covered the next window.
+describe("handleCallApi windowed streaming under an active pass", () => {
+  test("close reason and cost line both acknowledge the pass", async () => {
+    const expiresAt = Date.now() + 60 * 60 * 1000;
+    const sse = () =>
+      new Response('data: {"n":1}\n\ndata: {"n":2}\n\n', {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    const l402Client = makeL402Client({
+      request: mock(async () => sse()),
+      getSessions: () => new Map([["test-api.gw.bolthub.ai/v1/stream", { expiresAt }]]),
+    } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/stream", stream_events: 1 },
+      makeApiClient(),
+      l402Client,
+    );
+
+    const text = result.content[0].text;
+    expect(text).toContain("0 sats (covered by active pass)");
+    expect(text).toContain(`free under your active pass until ${new Date(expiresAt).toISOString()}`);
+    expect(text).not.toContain("a new payment on paid endpoints");
+  });
+
+  test("without a pass the close line still names the re-payment", async () => {
+    const sse = () =>
+      new Response('data: {"n":1}\n\n', {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    const l402Client = makeL402Client({ request: mock(async () => sse()) } as any);
+
+    const result = await handleCallApi(
+      { slug: "test-api", path: "/v1/stream", stream_events: 1 },
+      makeApiClient(),
+      l402Client,
+    );
+
+    expect(result.content[0].text).toContain("a new payment on paid endpoints");
+  });
+});
+
+// F11 (2026-07-25 smoke): a failed payment must point at the payer-side
+// diagnostic, not dead-end on the wallet's one-liner.
+describe("payment-failure hint", () => {
+  const paymentError = () => {
+    const err = new Error("Problem sending payment [wallet error code: RESTRICTED] — this wallet connection is not permitted to pay invoices");
+    err.name = "L402PaymentError";
+    return err;
+  };
+
+  test("call_api payment failures point at wallet_status", async () => {
+    const l402Client = makeL402Client({
+      request: mock(async () => { throw paymentError(); }),
+    } as any);
+    const result = await handleCallApi({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Run wallet_status");
+  });
+
+  test("buy_credit payment failures point at wallet_status", async () => {
+    const l402Client = makeL402Client({
+      buyCredit: mock(async () => { throw paymentError(); }),
+    } as any);
+    const result = await handleBuyCredit(
+      { slug: "test-api", path: "/v1/data", credit_sats: 100 },
+      makeApiClient(),
+      l402Client,
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Run wallet_status");
+  });
+
+  test("budget refusals do NOT get the wallet hint", async () => {
+    const budgetErr = new Error("Invoice amount 800 exceeds max per-request 500");
+    budgetErr.name = "L402BudgetError";
+    const l402Client = makeL402Client({
+      request: mock(async () => { throw budgetErr; }),
+    } as any);
+    const result = await handleCallApi({ slug: "test-api", path: "/v1/data" }, makeApiClient(), l402Client);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain("Run wallet_status");
+  });
+});

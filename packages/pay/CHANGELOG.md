@@ -4,6 +4,35 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-07-25
+
+### Added
+
+- **`WalletAdapter.diagnose()` (optional) and the `WalletDiagnostics` type.**
+  A payer-side health probe: balance, permissions, identity — whatever the
+  backend will disclose. Implemented for all four built-in adapters. The NWC
+  adapter reports whether the connection is permitted to call `pay_invoice`
+  (receive-only connection strings are a common misconfiguration), via new
+  optional `getBalance`/`getInfo`/`walletPubkey` members on `NwcConnection`.
+  Probes that fail or aren't permitted degrade into `limitations` entries;
+  `diagnose()` never throws. Custom adapters are unaffected: the method is
+  optional and nothing calls it implicitly.
+
+### Fixed
+
+- **Payment failures name their cause.** `describePaymentFailure` now reads
+  the NIP-47 error code off wallet errors (duck-typed; the package stays
+  zero-dependency), quotes it verbatim, and appends the operator action for
+  each class: `INSUFFICIENT_BALANCE`, `RESTRICTED` (connection can't pay
+  invoices), `UNAUTHORIZED` (revoked connection string), `QUOTA_EXCEEDED`
+  (the connection's own wallet-side budget), `RATE_LIMITED`,
+  `NOT_IMPLEMENTED`, and `PAYMENT_FAILED` (route/liquidity/offline); relay
+  and publish timeouts read as wallet-unreachable. Previously an NWC wallet's
+  generic "Problem sending payment" surfaced with no cause at all. The raw
+  wallet message is always preserved.
+- **`ToolClient` (TPP payments) uses the same translation** when a payer
+  fails, instead of wrapping the bare wallet message.
+
 ## [0.8.0] - 2026-07-23
 
 ### Added
