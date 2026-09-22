@@ -17,6 +17,9 @@ export type { CreatePaywallOptions, Paywall, PaywallToolOptions } from "./paywal
 export { l402Rail } from "./rails/l402";
 export type { L402RailOptions } from "./rails/l402";
 
+export { nanoRail, XNO_RAW } from "./rails/nano";
+export type { NanoRailOptions } from "./rails/nano";
+
 export { facilitatorRail, httpFacilitator } from "./rails/facilitator";
 export type {
   FacilitatorRailOptions,

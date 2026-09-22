@@ -4,6 +4,18 @@ All notable changes to `@bolthub/pay` are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`nanoRail(options)` — a second `PaymentRail` beside the L402 rail.** Nano
+  (XNO) settles an agent tool call with a single signed send block: no invoice,
+  no preimage, no routing, no liquidity, no expiry — final in well under a
+  second at zero fee. `nanoRail` implements the same `PaymentRail` interface as
+  `l402Rail` (`createOffer`/`verify`), so the paywall core is untouched. It is
+  dependency-free: the block-verification seam is injected, matching the repo's
+  rule that the payment path carries no third-party runtime dependencies.
+
 ## [0.8.1] - 2026-07-25
 
 ### Added
