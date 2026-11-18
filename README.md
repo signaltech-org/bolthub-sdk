@@ -1,5 +1,10 @@
 # bolthub SDK
 
+> [!WARNING]
+> **This project is no longer maintained.** bolthub.ai shuts down on 18 December 2026: the hosted marketplace, gateway and dashboard stop on that date, and every package below is deprecated. Published versions stay installable but will not receive fixes, including security fixes.
+>
+> `@bolthub/mcp`, `@bolthub/cli`, `@bolthub/verify` and `bolthub-verify` depend on the hosted service and stop working after the shutdown. `@bolthub/pay` and the Python `bolthub` package are standalone L402 clients and keep working against any L402 server, as-is.
+
 Source code for every publicly published [bolthub.ai](https://bolthub.ai) package: the npm `@bolthub/*` scope and the `bolthub` / `bolthub-verify` PyPI packages.
 
 bolthub is a payment layer for agent-to-tool commerce: charge agents for your MCP tools and APIs per call, settling straight to your wallet over Lightning (L402), with bolthub never in the funds path. These packages are the open-source side of that: the tool-payment SDK, payment clients, MCP servers, a CLI, and origin-verification middleware.

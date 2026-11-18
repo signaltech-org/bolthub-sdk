@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Email **contact@bolthub.ai**. We respond within one business day. Please do not file public GitHub issues for security bugs.
+These packages are no longer maintained (bolthub.ai shuts down on 18 December 2026), so no further security fixes will be released. You can still email **contact@bolthub.ai**, but there is no response-time commitment. If you depend on these packages, pin a version you have reviewed or move to a maintained L402 client.
 
 ## Trust model
 
